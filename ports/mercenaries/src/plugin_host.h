@@ -15,6 +15,14 @@ int recomp_plugin_call_guest(uint32_t address, uint32_t this_ptr, const uint32_t
                              uint32_t *eax, uint32_t *edx, double *st0, char *error, size_t error_size);
 int recomp_plugin_guest_scratch(uint32_t *address, uint32_t *bytes);
 int recomp_plugin_in_gameplay(void);
+/* Function hooks: wrappers in recomp/gen/foundry_hooks.c (written by
+ * Mercenaries Foundry's port-hooks command) call recomp_foundry_hook_call. */
+#include "../sdk/mercenaries_plugin.h"
+int recomp_foundry_hook_index(uint32_t address);   /* -1 if not hookable */
+void recomp_foundry_hook_enable(unsigned index);
+int merc_plugins_hook_ready(void);                 /* on the owner thread, initialized */
+void merc_plugins_hook_before(unsigned index, MercHookContext *call);
+void merc_plugins_hook_after(unsigned index, MercHookContext *call);
 #ifdef __cplusplus
 }
 #endif

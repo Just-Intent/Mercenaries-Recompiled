@@ -2870,6 +2870,73 @@ int recomp_plugin_call_guest(uint32_t address, uint32_t this_ptr, const uint32_t
     return 1;
 }
 
+/* ----- Function hooks (Mercenaries Foundry) -----
+ * `python -m mercfoundry port-hooks` renames chosen generated functions to
+ * sub_XXXXXXXX_body and writes recomp/gen/foundry_hooks.c, whose wrappers
+ * keep the original names (so direct calls, the dispatch table and indirect
+ * calls all reach them) and call recomp_foundry_hook_call when a plugin has
+ * hooked the function. Without that file the table below is empty. */
+#define FOUNDRY_HOOK_MAX 4096u
+volatile uint8_t g_foundry_hook_on[FOUNDRY_HOOK_MAX];
+static uint8_t g_foundry_hook_busy[FOUNDRY_HOOK_MAX];
+
+const uint32_t *foundry_hook_table(unsigned *count);
+const uint32_t *foundry_hook_table_none(unsigned *count)
+{
+    *count = 0;
+    return NULL;
+}
+#pragma comment(linker, "/alternatename:foundry_hook_table=foundry_hook_table_none")
+
+int recomp_foundry_hook_index(uint32_t address)
+{
+    unsigned count, i;
+    const uint32_t *table = foundry_hook_table(&count);
+    for (i = 0; table && i < count && i < FOUNDRY_HOOK_MAX; i++)
+        if (table[i] == address)
+            return (int)i;
+    return -1;
+}
+
+void recomp_foundry_hook_enable(unsigned index)
+{
+    if (index < FOUNDRY_HOOK_MAX)
+        g_foundry_hook_on[index] = 1;
+}
+
+void recomp_foundry_hook_call(unsigned index, uint32_t address, recomp_func_t body)
+{
+    MercHookContext call;
+
+    /* Main thread only, and no re-entry into the same hook. */
+    if (index >= FOUNDRY_HOOK_MAX || g_foundry_hook_busy[index] || !merc_plugins_hook_ready()) {
+        body();
+        return;
+    }
+    g_foundry_hook_busy[index] = 1;
+    memset(&call, 0, sizeof(call));
+    call.struct_size = sizeof(call);
+    call.address = address;
+    call.ecx = g_ecx;
+    call.esp = g_esp;
+    merc_plugins_hook_before(index, &call);
+    g_ecx = call.ecx;
+    if (call.skip) {
+        g_esp += 4u + call.pop_bytes; /* the original's ret N */
+        g_eax = call.eax;
+        g_edx = call.edx;
+    } else {
+        body();
+        call.eax = g_eax;
+        call.edx = g_edx;
+        call.st0 = g_fp_stack[g_fp_top & 7u];
+        merc_plugins_hook_after(index, &call);
+        g_eax = call.eax;
+        g_edx = call.edx;
+    }
+    g_foundry_hook_busy[index] = 0;
+}
+
 static void recomp_guard_cancel_owner(uint32_t owner);
 static void recomp_guard_request(uint32_t vm, uint32_t handle);
 static void recomp_guard_callback(uint32_t vm);

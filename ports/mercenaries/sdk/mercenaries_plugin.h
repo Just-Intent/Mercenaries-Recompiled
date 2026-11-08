@@ -29,6 +29,23 @@ typedef struct MercGuestCall {
     double st0;            /* out: x87 top after the call (float/double results) */
     char error[96];        /* out: why the call was refused */
 } MercGuestCall;
+/* A hooked call of a game function. In `before`: address, ecx (this, may be
+ * changed) and esp ([esp] = return address, [esp + 4] = first argument; change
+ * arguments with write_guest). Set skip = 1 to not run the original; then set
+ * eax/edx and pop_bytes (bytes of arguments the original pops itself: 4 x
+ * argument count for __stdcall/__thiscall, 0 for __cdecl). In `after`: eax,
+ * edx (may be changed) and st0 (the x87 top: float results, read only). */
+typedef struct MercHookContext {
+    uint32_t struct_size;
+    uint32_t address;
+    uint32_t ecx;
+    uint32_t esp;
+    uint32_t eax, edx;
+    double st0;
+    int32_t skip;
+    uint32_t pop_bytes;
+} MercHookContext;
+typedef void (MERC_PLUGIN_CALL *MercHookFn)(void *userdata, MercHookContext *call);
 typedef struct MercPluginHost {
     uint32_t struct_size, api_version;
     void *context;
@@ -46,6 +63,12 @@ typedef struct MercPluginHost {
     int (MERC_PLUGIN_CALL *guest_scratch)(void *, uint32_t *, uint32_t *);
     /* 1 while normal gameplay is running (not menus or loading). */
     int (MERC_PLUGIN_CALL *in_gameplay)(void *);
+    /* Run before/after (either may be NULL) whenever the game calls the
+     * function at address, on the game's main thread. Only functions built
+     * as hookable (named in the Foundry function map) can be hooked; returns
+     * 0 otherwise. Register from init or on_update; hooks last until shutdown.
+     * Callbacks may use read_guest, write_guest, call_guest and log. */
+    int (MERC_PLUGIN_CALL *hook_guest)(void *, uint32_t, MercHookFn, MercHookFn, void *);
 } MercPluginHost;
 /* True when the host provides a field (older hosts have a smaller struct). */
 #define MERC_PLUGIN_HOST_HAS(host, field) \

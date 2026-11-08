@@ -43,9 +43,17 @@ void MERC_PLUGIN_CALL plugin_log(void *ctx,const char *message) {
     if(GetCurrentThreadId()!=owner||!calling||ctx!=calling||!message)return;
     record(calling->manifest.id+": "+std::string(message));
 }
+/* Regions already found accessible. Plugins call read/write_guest from hooks
+ * on hot functions, where a VirtualQuery per call is too slow. */
+struct Region {uintptr_t base,end;bool writable;};
+Region region_cache[8];
+unsigned region_next=0;
+bool guest_ok=false; /* guest RAM is one read-write mapping; checked once */
 bool accessible(void *address,size_t bytes,bool write) {
     auto p=reinterpret_cast<uintptr_t>(address),end=p+bytes;
     if(end<p)return false;
+    for(const auto &r:region_cache)
+        if(r.end&&p>=r.base&&end<=r.end&&(r.writable||!write))return true;
     while(p<end) {
         MEMORY_BASIC_INFORMATION mbi{};
         if(!VirtualQuery(reinterpret_cast<void*>(p),&mbi,sizeof(mbi))||mbi.State!=MEM_COMMIT||
@@ -57,13 +65,14 @@ bool accessible(void *address,size_t bytes,bool write) {
                       protection==PAGE_EXECUTE_READWRITE||protection==PAGE_EXECUTE_WRITECOPY;
         if(!readable||(write&&!writable))return false;
         auto next=reinterpret_cast<uintptr_t>(mbi.BaseAddress)+mbi.RegionSize;
+        region_cache[region_next++%8]={reinterpret_cast<uintptr_t>(mbi.BaseAddress),next,writable};
         if(next<=p)return false;p=next;
     }return true;
 }
 bool span(void *ctx,uint32_t address,size_t bytes,bool write) {
     return GetCurrentThreadId()==owner&&calling&&ctx==calling&&guest&&bytes&&
         address>=0x10000u&&address<guest_size&&bytes<=guest_size-address&&
-        accessible(static_cast<unsigned char*>(guest)+address,bytes,write);
+        (guest_ok||accessible(static_cast<unsigned char*>(guest)+address,bytes,write));
 }
 int MERC_PLUGIN_CALL read_guest(void *ctx,uint32_t address,void *out,size_t bytes) {
     if(!out||!span(ctx,address,bytes,false)||!accessible(out,bytes,true))return 0;
@@ -74,6 +83,9 @@ int MERC_PLUGIN_CALL write_guest(void *ctx,uint32_t address,const void *data,siz
     memmove(static_cast<unsigned char*>(guest)+address,data,bytes);return 1;
 }
 bool updating=false;
+int hooking=0;
+struct Hook {Loaded *plugin;MercHookFn before,after;void *userdata;};
+std::map<unsigned,std::vector<Hook>> hooks;
 void call_error(MercGuestCall *call,const char *message) {
     snprintf(call->error,sizeof(call->error),"%s",message);
 }
@@ -81,8 +93,8 @@ int MERC_PLUGIN_CALL call_guest(void *ctx,MercGuestCall *call) {
     if(!call||!accessible(call,sizeof(MercGuestCall),true))return 0;
     if(call->struct_size<sizeof(MercGuestCall)){call_error(call,"MercGuestCall.struct_size is too small.");return 0;}
     call->error[0]=0;call->eax=call->edx=0;call->st0=0;
-    if(GetCurrentThreadId()!=owner||!calling||ctx!=calling||!updating) {
-        call_error(call,"Guest calls are only allowed inside on_update.");return 0;
+    if(GetCurrentThreadId()!=owner||!calling||ctx!=calling||!(updating||hooking)) {
+        call_error(call,"Guest calls are only allowed inside on_update or a hook.");return 0;
     }
     if(call->arg_count>MERC_GUEST_CALL_MAX_ARGS){call_error(call,"Too many arguments.");return 0;}
     return recomp_plugin_call_guest(call->address,call->this_ptr,call->args,call->arg_count,
@@ -96,6 +108,30 @@ int MERC_PLUGIN_CALL in_gameplay(void *ctx) {
     if(GetCurrentThreadId()!=owner||!calling||ctx!=calling)return 0;
     return recomp_plugin_in_gameplay();
 }
+int MERC_PLUGIN_CALL hook_guest(void *ctx,uint32_t address,MercHookFn before,MercHookFn after,void *userdata) {
+    if(GetCurrentThreadId()!=owner||!calling||ctx!=calling||hooking||(!before&&!after))return 0;
+    int index=recomp_foundry_hook_index(address);
+    if(index<0)return 0;
+    hooks[unsigned(index)].push_back({calling,before,after,userdata});
+    recomp_foundry_hook_enable(unsigned(index));
+    char text[96];snprintf(text,sizeof(text),"hooked 0x%08X",address);
+    record(calling->manifest.id+": "+text);
+    return 1;
+}
+void run_hooks(unsigned index,MercHookContext *call,bool after) {
+    auto it=hooks.find(index);
+    if(it==hooks.end())return;
+    Loaded *previous=calling;
+    for(auto &h:it->second) {
+        MercHookFn fn=after?h.after:h.before;
+        if(!fn||!h.plugin->active)continue;
+        calling=h.plugin;++hooking;
+        try {fn(h.userdata,call);}
+        catch(...) {h.plugin->active=false;record(h.plugin->manifest.name+": a hook threw; the plugin is stopped.");}
+        --hooking;
+    }
+    calling=previous;
+}
 void shutdown_all() {
     for(auto it=loaded.rbegin();it!=loaded.rend();++it) {
         auto &p=**it;
@@ -107,7 +143,7 @@ void shutdown_all() {
         }
         if(p.module)FreeLibrary(p.module);
     }
-    loaded.clear();guest=nullptr;guest_size=0;initialized=false;dispatching=false;
+    loaded.clear();guest=nullptr;guest_size=0;guest_ok=false;initialized=false;dispatching=false;
     if(log_file)log_file.close();
 }
 }
@@ -139,13 +175,14 @@ extern "C" int merc_plugins_initialize(void *base,size_t bytes) {
         }
         validate(manifests);
         if(!base||guest_size<=0x10000)throw std::runtime_error("Guest RAM is not ready for plugins.");
+        guest_ok=accessible(static_cast<unsigned char*>(guest)+0x10000,guest_size-0x10000,true);
         for(auto &m:manifests) {
             auto p=std::make_unique<Loaded>();p->manifest=m;
             p->directory=utf8(m.root.wstring());p->settings=utf8((fs::path(settings)/wide(m.id)).wstring());
             fs::create_directories(fs::path(wide(p->settings)));
             p->host={sizeof(MercPluginHost),MERCENARIES_PLUGIN_API_VERSION,p.get(),
                 p->manifest.id.c_str(),p->directory.c_str(),p->settings.c_str(),plugin_log,read_guest,write_guest,
-                call_guest,guest_scratch,in_gameplay};
+                call_guest,guest_scratch,in_gameplay,hook_guest};
             p->callbacks.struct_size=sizeof(MercPlugin);p->callbacks.api_version=MERCENARIES_PLUGIN_API_VERSION;
             auto library=m.root/wide(m.library);
             // Own directory for dependencies; no working-directory or PATH search.
@@ -199,8 +236,14 @@ extern "C" int merc_plugins_update(void) {
     }
     dispatching=false;return failure.empty()?1:0;
 }
+extern "C" int merc_plugins_hook_ready(void) {
+    return initialized&&GetCurrentThreadId()==owner;
+}
+extern "C" void merc_plugins_hook_before(unsigned index,MercHookContext *call) {run_hooks(index,call,false);}
+extern "C" void merc_plugins_hook_after(unsigned index,MercHookContext *call) {run_hooks(index,call,true);}
 extern "C" void merc_plugins_shutdown(void) {
     if(GetCurrentThreadId()!=owner||dispatching)return;
+    hooks.clear(); /* before any plugin DLL is unloaded */
     dispatching=true;shutdown_all();
 }
 
