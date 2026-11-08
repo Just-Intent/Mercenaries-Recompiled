@@ -79,6 +79,11 @@ typedef struct MercPluginHost {
      * every script loaded from now on. Call it from init. Returns 0 if the
      * name is taken or invalid, or the build can't add commands. */
     int (MERC_PLUGIN_CALL *add_lua_command)(void *, const char *, MercLuaFn, void *);
+    /* Tell the game a plugin tool window is open (1) or closed (0). While any
+     * is open the game treats it like the F9 developer panel: it leaves
+     * exclusive fullscreen (so the window can show) and ignores game input.
+     * Call from on_update. */
+    int (MERC_PLUGIN_CALL *set_tool_window)(void *, int);
 } MercPluginHost;
 /* True when the host provides a field (older hosts have a smaller struct). */
 #define MERC_PLUGIN_HOST_HAS(host, field) \

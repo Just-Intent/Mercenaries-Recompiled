@@ -905,11 +905,24 @@ static void host_apply_recomp_options(uint32_t changes)
                  SWP_NOZORDER | SWP_FRAMECHANGED | SWP_SHOWWINDOW | SWP_NOACTIVATE);
     g_host_resizing=0;
 }
+static int g_dev_tools_open, g_plugin_tools_open;
 static void host_dev_display(int open){
-    g_host_tools_open=open;
+    g_dev_tools_open=open;
+    g_host_tools_open=g_dev_tools_open||g_plugin_tools_open;
     if(recomp_options_display_mode()!=RECOMP_DISPLAY_FULLSCREEN)return;
     if(open)host_apply_recomp_options(RECOMP_OPTIONS_CHANGE_DISPLAY);
     else PostMessageA(g_host_window,WM_RECOMP_DISPLAY,0,0);
+}
+/* Plugin tool windows (Mercenaries Foundry): treated like the F9 panel. Called
+ * on the guest thread, so the display change is posted to the window's thread. */
+void xbox_InputSetOverlayCapture(BOOL captured);
+static void host_plugin_tools(int open){
+    g_plugin_tools_open=open;
+    g_host_tools_open=g_dev_tools_open||g_plugin_tools_open;
+    if(open)xbox_InputSetOverlayCapture(TRUE);
+    else if(!g_dev_tools_open)xbox_InputSetOverlayCapture(FALSE);
+    if(g_host_window&&recomp_options_display_mode()==RECOMP_DISPLAY_FULLSCREEN)
+        PostMessageA(g_host_window,WM_RECOMP_DISPLAY,0,0);
 }
 
 
@@ -1064,6 +1077,7 @@ static BOOL host_graphics_init(HINSTANCE instance, int show_command)
     recomp_options_set_apply_callback(host_apply_recomp_options);
     recomp_dev_menu_init(g_host_window, dev_bookmark);
     recomp_dev_menu_set_display_callback(host_dev_display);
+    merc_plugins_set_tool_display(host_plugin_tools);
     recomp_dev_overlay_init();
     g_host_ready=1;
     recomp_controls_init(g_host_window);

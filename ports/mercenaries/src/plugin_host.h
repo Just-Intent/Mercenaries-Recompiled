@@ -33,6 +33,9 @@ void merc_plugins_hook_after(unsigned index, MercHookContext *call);
 #define FOUNDRY_LUA_PUSHCCLOSURE 0x001DD0D0u
 #define FOUNDRY_LUA_SETTABLE 0x001DD380u
 #define FOUNDRY_LUA_GLOBALSINDEX 0xFFFFD8EFu /* -10001 */
+/* Plugin tool windows: the host (main.c) gets told when the first opens and
+ * the last closes, and treats that like the F9 panel. */
+void merc_plugins_set_tool_display(void (*callback)(int open));
 unsigned merc_plugins_lua_count(void);
 int merc_plugins_lua_command(unsigned index, uint32_t L);
 #ifdef __cplusplus

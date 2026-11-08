@@ -15,7 +15,7 @@ struct Loaded {
     MercPluginHost host{};
     MercPlugin callbacks{};
     std::string directory,settings;
-    bool entered=false,active=false;
+    bool entered=false,active=false,tool_open=false;
 };
 std::vector<std::unique_ptr<Loaded>> loaded;
 DWORD owner=0;
@@ -185,7 +185,24 @@ int MERC_PLUGIN_CALL add_lua_command(void *ctx,const char *name,MercLuaFn fn,voi
     record(calling->manifest.id+": added script command "+name);
     return 1;
 }
+/* Plugin tool windows (counted; the host hears when the first opens and the
+ * last closes). */
+void (*tool_display)(int)=nullptr;
+unsigned tools_open=0;
+void set_tool(Loaded &p,bool open) {
+    if(p.tool_open==open)return;
+    p.tool_open=open;
+    unsigned before=tools_open;
+    tools_open+=open?1:-1;
+    if(tool_display&&(before==0)!=(tools_open==0))tool_display(tools_open?1:0);
+}
+int MERC_PLUGIN_CALL set_tool_window(void *ctx,int open) {
+    if(GetCurrentThreadId()!=owner||!calling||ctx!=calling)return 0;
+    set_tool(*calling,open!=0);
+    return 1;
+}
 void shutdown_all() {
+    for(auto &entry:loaded)set_tool(*entry,false);
     for(auto it=loaded.rbegin();it!=loaded.rend();++it) {
         auto &p=**it;
         if(p.entered&&p.callbacks.on_shutdown) {
@@ -235,7 +252,7 @@ extern "C" int merc_plugins_initialize(void *base,size_t bytes) {
             fs::create_directories(fs::path(wide(p->settings)));
             p->host={sizeof(MercPluginHost),MERCENARIES_PLUGIN_API_VERSION,p.get(),
                 p->manifest.id.c_str(),p->directory.c_str(),p->settings.c_str(),plugin_log,read_guest,write_guest,
-                call_guest,guest_scratch,in_gameplay,hook_guest,add_lua_command};
+                call_guest,guest_scratch,in_gameplay,hook_guest,add_lua_command,set_tool_window};
             p->callbacks.struct_size=sizeof(MercPlugin);p->callbacks.api_version=MERCENARIES_PLUGIN_API_VERSION;
             auto library=m.root/wide(m.library);
             // Own directory for dependencies; no working-directory or PATH search.
@@ -281,7 +298,7 @@ extern "C" int merc_plugins_update(void) {
         try {ok=p.callbacks.on_update(p.callbacks.userdata,&update);}catch(...) {ok=0;}
         updating=false;calling=nullptr;
         if(!ok) {
-            p.active=false;stopped.insert(p.manifest.id);
+            p.active=false;stopped.insert(p.manifest.id);set_tool(p,false);
             if(!failure.empty())failure+="\n";
             failure+=p.manifest.name+": update failed; this plugin and its dependents will receive no further updates. Restart the game after correcting the mod.";
             record(failure);
@@ -294,6 +311,7 @@ extern "C" int merc_plugins_hook_ready(void) {
 }
 extern "C" void merc_plugins_hook_before(unsigned index,MercHookContext *call) {run_hooks(index,call,false);}
 extern "C" void merc_plugins_hook_after(unsigned index,MercHookContext *call) {run_hooks(index,call,true);}
+extern "C" void merc_plugins_set_tool_display(void (*callback)(int)) {tool_display=callback;}
 extern "C" unsigned merc_plugins_lua_count(void) {return unsigned(lua_commands.size());}
 extern "C" int merc_plugins_lua_command(unsigned index,uint32_t L) {
     if(!initialized||GetCurrentThreadId()!=owner||index>=lua_commands.size())return 0;
