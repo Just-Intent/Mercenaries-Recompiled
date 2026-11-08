@@ -4,6 +4,7 @@
 #include "free_cam.h"
 #include "d3d8_internal.h"
 #include "d3d8_frame_timing.h"
+#include "plugin_host.h"
 #include <stdio.h>
 #include <string.h>
 static int enabled;
@@ -15,7 +16,16 @@ static ULONGLONG updated;
 #define W 360
 #define H 128
 void recomp_dev_overlay_set(int value){enabled=value && recomp_dev_menu_allowed();updated=0;}
+static void paint_dev(void);
+/* Plugin images (MercPluginHost.set_overlay) go over the game and the F9 overlay. */
+static void composite_plugin(const void *pixels,unsigned w,unsigned h,unsigned x,unsigned y){
+    d3d8_CompositeHostOverlay(pixels,w,h,x,y,960,540);
+}
 static void paint(void){
+    paint_dev();
+    merc_plugins_each_overlay(composite_plugin);
+}
+static void paint_dev(void){
     if(!enabled)return;
     if(!dc){
         BITMAPINFO info={0};info.bmiHeader.biSize=sizeof(BITMAPINFOHEADER);

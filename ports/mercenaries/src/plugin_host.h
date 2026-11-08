@@ -36,6 +36,9 @@ void merc_plugins_hook_after(unsigned index, MercHookContext *call);
 /* Plugin tool windows: the host (main.c) gets told when the first opens and
  * the last closes, and treats that like the F9 panel. */
 void merc_plugins_set_tool_display(void (*callback)(int open));
+/* Plugin overlays: call fn for each plugin image (render thread, at present). */
+void merc_plugins_each_overlay(void (*fn)(const void *pixels, unsigned width, unsigned height,
+                                          unsigned x, unsigned y));
 unsigned merc_plugins_lua_count(void);
 int merc_plugins_lua_command(unsigned index, uint32_t L);
 #ifdef __cplusplus

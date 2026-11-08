@@ -4,6 +4,9 @@
 #include "plugin_host.h"
 #include "plugin_manifest.h"
 #include <memory>
+#include <map>
+#include <mutex>
+#include <vector>
 #include <cstdio>
 #include <cstring>
 
@@ -201,7 +204,25 @@ int MERC_PLUGIN_CALL set_tool_window(void *ctx,int open) {
     set_tool(*calling,open!=0);
     return 1;
 }
+/* Plugin overlays: one premultiplied BGRA image per plugin, copied in by any
+ * thread, composited by the render thread at present. */
+struct Overlay {std::vector<uint32_t> pixels;unsigned width=0,height=0,x=0,y=0;};
+std::mutex overlay_lock;
+std::map<const Loaded*,Overlay> overlays;
+int MERC_PLUGIN_CALL set_overlay(void *ctx,const void *pixels,uint32_t width,uint32_t height,uint32_t x,uint32_t y) {
+    bool known=false;
+    for(auto &entry:loaded)if(entry.get()==ctx&&entry->active)known=true;
+    if(!known)return 0;
+    std::lock_guard<std::mutex> guard(overlay_lock);
+    if(!pixels||!width||!height){overlays.erase(static_cast<Loaded*>(ctx));return 1;}
+    if(width>960||height>540||x>=960||y>=540)return 0;
+    auto &o=overlays[static_cast<Loaded*>(ctx)];
+    o.pixels.assign(static_cast<const uint32_t*>(pixels),static_cast<const uint32_t*>(pixels)+size_t(width)*height);
+    o.width=width;o.height=height;o.x=x;o.y=y;
+    return 1;
+}
 void shutdown_all() {
+    {std::lock_guard<std::mutex> guard(overlay_lock);overlays.clear();}
     for(auto &entry:loaded)set_tool(*entry,false);
     for(auto it=loaded.rbegin();it!=loaded.rend();++it) {
         auto &p=**it;
@@ -252,7 +273,7 @@ extern "C" int merc_plugins_initialize(void *base,size_t bytes) {
             fs::create_directories(fs::path(wide(p->settings)));
             p->host={sizeof(MercPluginHost),MERCENARIES_PLUGIN_API_VERSION,p.get(),
                 p->manifest.id.c_str(),p->directory.c_str(),p->settings.c_str(),plugin_log,read_guest,write_guest,
-                call_guest,guest_scratch,in_gameplay,hook_guest,add_lua_command,set_tool_window};
+                call_guest,guest_scratch,in_gameplay,hook_guest,add_lua_command,set_tool_window,set_overlay};
             p->callbacks.struct_size=sizeof(MercPlugin);p->callbacks.api_version=MERCENARIES_PLUGIN_API_VERSION;
             auto library=m.root/wide(m.library);
             // Own directory for dependencies; no working-directory or PATH search.
@@ -312,6 +333,13 @@ extern "C" int merc_plugins_hook_ready(void) {
 extern "C" void merc_plugins_hook_before(unsigned index,MercHookContext *call) {run_hooks(index,call,false);}
 extern "C" void merc_plugins_hook_after(unsigned index,MercHookContext *call) {run_hooks(index,call,true);}
 extern "C" void merc_plugins_set_tool_display(void (*callback)(int)) {tool_display=callback;}
+extern "C" void merc_plugins_each_overlay(void (*fn)(const void*,unsigned,unsigned,unsigned,unsigned)) {
+    std::lock_guard<std::mutex> guard(overlay_lock);
+    for(auto &entry:overlays) {
+        const Overlay &o=entry.second;
+        if(entry.first->active&&!o.pixels.empty())fn(o.pixels.data(),o.width,o.height,o.x,o.y);
+    }
+}
 extern "C" unsigned merc_plugins_lua_count(void) {return unsigned(lua_commands.size());}
 extern "C" int merc_plugins_lua_command(unsigned index,uint32_t L) {
     if(!initialized||GetCurrentThreadId()!=owner||index>=lua_commands.size())return 0;

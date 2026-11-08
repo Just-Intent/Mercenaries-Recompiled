@@ -84,6 +84,14 @@ typedef struct MercPluginHost {
      * exclusive fullscreen (so the window can show) and ignores game input.
      * Call from on_update. */
     int (MERC_PLUGIN_CALL *set_tool_window)(void *, int);
+    /* Show an image over the game's own frames, in fullscreen too: pixels are
+     * premultiplied BGRA (width * height * 4 bytes, rows top to bottom), placed
+     * at x, y on a 960 x 540 screen (scaled to the game's picture). The host
+     * keeps a copy and draws it every frame, after the F9 overlay, until it is
+     * replaced, or hidden with pixels NULL. One image per plugin, at most
+     * 960 x 540. Any thread may call it. Returns 1, or 0 if refused. */
+    int (MERC_PLUGIN_CALL *set_overlay)(void *, const void *pixels, uint32_t width, uint32_t height,
+                                        uint32_t x, uint32_t y);
 } MercPluginHost;
 /* True when the host provides a field (older hosts have a smaller struct). */
 #define MERC_PLUGIN_HOST_HAS(host, field) \
