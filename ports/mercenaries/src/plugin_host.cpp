@@ -73,6 +73,29 @@ int MERC_PLUGIN_CALL write_guest(void *ctx,uint32_t address,const void *data,siz
     if(!data||!span(ctx,address,bytes,true)||!accessible(const_cast<void*>(data),bytes,false))return 0;
     memmove(static_cast<unsigned char*>(guest)+address,data,bytes);return 1;
 }
+bool updating=false;
+void call_error(MercGuestCall *call,const char *message) {
+    snprintf(call->error,sizeof(call->error),"%s",message);
+}
+int MERC_PLUGIN_CALL call_guest(void *ctx,MercGuestCall *call) {
+    if(!call||!accessible(call,sizeof(MercGuestCall),true))return 0;
+    if(call->struct_size<sizeof(MercGuestCall)){call_error(call,"MercGuestCall.struct_size is too small.");return 0;}
+    call->error[0]=0;call->eax=call->edx=0;call->st0=0;
+    if(GetCurrentThreadId()!=owner||!calling||ctx!=calling||!updating) {
+        call_error(call,"Guest calls are only allowed inside on_update.");return 0;
+    }
+    if(call->arg_count>MERC_GUEST_CALL_MAX_ARGS){call_error(call,"Too many arguments.");return 0;}
+    return recomp_plugin_call_guest(call->address,call->this_ptr,call->args,call->arg_count,
+        &call->eax,&call->edx,&call->st0,call->error,sizeof(call->error));
+}
+int MERC_PLUGIN_CALL guest_scratch(void *ctx,uint32_t *address,uint32_t *bytes) {
+    if(GetCurrentThreadId()!=owner||!calling||ctx!=calling||!updating||!address||!bytes)return 0;
+    return recomp_plugin_guest_scratch(address,bytes);
+}
+int MERC_PLUGIN_CALL in_gameplay(void *ctx) {
+    if(GetCurrentThreadId()!=owner||!calling||ctx!=calling)return 0;
+    return recomp_plugin_in_gameplay();
+}
 void shutdown_all() {
     for(auto it=loaded.rbegin();it!=loaded.rend();++it) {
         auto &p=**it;
@@ -121,7 +144,8 @@ extern "C" int merc_plugins_initialize(void *base,size_t bytes) {
             p->directory=utf8(m.root.wstring());p->settings=utf8((fs::path(settings)/wide(m.id)).wstring());
             fs::create_directories(fs::path(wide(p->settings)));
             p->host={sizeof(MercPluginHost),MERCENARIES_PLUGIN_API_VERSION,p.get(),
-                p->manifest.id.c_str(),p->directory.c_str(),p->settings.c_str(),plugin_log,read_guest,write_guest};
+                p->manifest.id.c_str(),p->directory.c_str(),p->settings.c_str(),plugin_log,read_guest,write_guest,
+                call_guest,guest_scratch,in_gameplay};
             p->callbacks.struct_size=sizeof(MercPlugin);p->callbacks.api_version=MERCENARIES_PLUGIN_API_VERSION;
             auto library=m.root/wide(m.library);
             // Own directory for dependencies; no working-directory or PATH search.
@@ -163,9 +187,9 @@ extern "C" int merc_plugins_update(void) {
             p.active=false;stopped.insert(p.manifest.id);record(p.manifest.name+": updates stopped because a required plugin failed.");continue;
         }
         if(!p.callbacks.on_update)continue;
-        calling=&p;int ok=0;
+        calling=&p;int ok=0;updating=true;
         try {ok=p.callbacks.on_update(p.callbacks.userdata,&update);}catch(...) {ok=0;}
-        calling=nullptr;
+        updating=false;calling=nullptr;
         if(!ok) {
             p.active=false;stopped.insert(p.manifest.id);
             if(!failure.empty())failure+="\n";

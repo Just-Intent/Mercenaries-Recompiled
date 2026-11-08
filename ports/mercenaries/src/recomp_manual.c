@@ -2814,6 +2814,62 @@ static void recomp_guest_push_u32(uint32_t value)
     *(volatile uint32_t *)guest_ptr(g_esp) = value;
 }
 
+/* ----- Plugin guest calls (Mercenaries Foundry) -----
+ * Plugins call retail functions from on_update, which runs at the input
+ * checkpoint on the guest's own thread (the same place the dev tools call
+ * them). The call gets its own stack 16 KB below the guest's; the space
+ * between is the plugin's scratch memory for that update. The whole guest
+ * CPU context is saved and restored around each call. */
+static int recomp_plugin_stack_ok(void)
+{
+    return g_xbox_mem_offset && g_esp >= 0x20000u && g_esp < 0x4000000u;
+}
+
+int recomp_plugin_guest_scratch(uint32_t *address, uint32_t *bytes)
+{
+    if (!recomp_plugin_stack_ok())
+        return 0;
+    *address = (g_esp - 0x3F00u) & ~15u;
+    *bytes = 0x3000u;
+    return 1;
+}
+
+int recomp_plugin_in_gameplay(void)
+{
+    return g_xbox_mem_offset && guest_u32(0x413F6Cu) == 0x4249D707u &&
+           guest_u32(0x413F68u) == 0xC2CBD863u;
+}
+
+int recomp_plugin_call_guest(uint32_t address, uint32_t this_ptr, const uint32_t *args, unsigned count,
+                             uint32_t *eax, uint32_t *edx, double *st0, char *error, size_t error_size)
+{
+    recomp_saved_guest_cpu_context saved;
+    recomp_func_t fn;
+    unsigned i;
+
+    if (!recomp_plugin_stack_ok()) {
+        snprintf(error, error_size, "The game's stack is not ready.");
+        return 0;
+    }
+    fn = recomp_lookup(address);
+    if (!fn) {
+        snprintf(error, error_size, "No game function at 0x%08X.", address);
+        return 0;
+    }
+    recomp_save_guest_cpu_context(&saved);
+    g_esp = (saved.esp - 0x4000u) & ~15u;
+    for (i = count; i > 0; --i)
+        recomp_guest_push_u32(args[i - 1]);
+    recomp_guest_push_u32(0u); /* return address */
+    g_ecx = this_ptr;
+    fn();
+    *eax = g_eax;
+    *edx = g_edx;
+    *st0 = g_fp_stack[g_fp_top & 7u];
+    recomp_restore_guest_cpu_context(&saved);
+    return 1;
+}
+
 static void recomp_guard_cancel_owner(uint32_t owner);
 static void recomp_guard_request(uint32_t vm, uint32_t handle);
 static void recomp_guard_callback(uint32_t vm);
