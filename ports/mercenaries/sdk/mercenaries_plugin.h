@@ -92,7 +92,17 @@ typedef struct MercPluginHost {
      * 960 x 540. Any thread may call it. Returns 1, or 0 if refused. */
     int (MERC_PLUGIN_CALL *set_overlay)(void *, const void *pixels, uint32_t width, uint32_t height,
                                         uint32_t x, uint32_t y);
+    /* Keyboard text for an in-game console. While on (1) the game ignores its
+     * input, as for the F9 panel, but the display isn't changed, and the game
+     * window's keys go to this plugin instead: read them with read_text_input.
+     * One plugin at a time (0 if another has it). Call from on_update. */
+    int (MERC_PLUGIN_CALL *set_text_input)(void *, int);
+    /* Up to max keys typed since the last call, oldest first: a Unicode
+     * character, or MERC_KEY_FLAG | virtual-key code for Enter, Escape,
+     * Backspace, Tab, Delete, Home, End and the arrows. Returns the count. */
+    int (MERC_PLUGIN_CALL *read_text_input)(void *, uint32_t *keys, uint32_t max);
 } MercPluginHost;
+#define MERC_KEY_FLAG 0x80000000u
 /* True when the host provides a field (older hosts have a smaller struct). */
 #define MERC_PLUGIN_HOST_HAS(host, field) \
     ((host)->struct_size >= offsetof(MercPluginHost, field) + sizeof((host)->field) && (host)->field)

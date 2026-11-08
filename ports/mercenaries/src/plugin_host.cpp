@@ -4,6 +4,7 @@
 #include "plugin_host.h"
 #include "plugin_manifest.h"
 #include <memory>
+#include <deque>
 #include <map>
 #include <mutex>
 #include <vector>
@@ -221,7 +222,34 @@ int MERC_PLUGIN_CALL set_overlay(void *ctx,const void *pixels,uint32_t width,uin
     o.width=width;o.height=height;o.x=x;o.y=y;
     return 1;
 }
+/* Keyboard text for a plugin's in-game console: the window procedure hands
+ * keys over while a plugin holds text input (main.c). */
+void (*text_capture)(int)=nullptr;
+Loaded *text_owner=nullptr;
+std::deque<uint32_t> text_keys;
+void release_text(Loaded *p) {
+    std::lock_guard<std::mutex> guard(overlay_lock);
+    if(text_owner!=p)return;
+    text_owner=nullptr;text_keys.clear();
+    if(text_capture)text_capture(0);
+}
+int MERC_PLUGIN_CALL set_text_input(void *ctx,int on) {
+    if(GetCurrentThreadId()!=owner||!calling||ctx!=calling)return 0;
+    if(!on){release_text(calling);return 1;}
+    std::lock_guard<std::mutex> guard(overlay_lock);
+    if(text_owner&&text_owner!=calling)return 0;
+    if(!text_owner){text_owner=calling;text_keys.clear();if(text_capture)text_capture(1);}
+    return 1;
+}
+int MERC_PLUGIN_CALL read_text_input(void *ctx,uint32_t *keys,uint32_t max) {
+    std::lock_guard<std::mutex> guard(overlay_lock);
+    if(!keys||ctx!=text_owner)return 0;
+    uint32_t n=0;
+    while(n<max&&!text_keys.empty()){keys[n++]=text_keys.front();text_keys.pop_front();}
+    return int(n);
+}
 void shutdown_all() {
+    for(auto &entry:loaded)release_text(entry.get());
     {std::lock_guard<std::mutex> guard(overlay_lock);overlays.clear();}
     for(auto &entry:loaded)set_tool(*entry,false);
     for(auto it=loaded.rbegin();it!=loaded.rend();++it) {
@@ -273,7 +301,8 @@ extern "C" int merc_plugins_initialize(void *base,size_t bytes) {
             fs::create_directories(fs::path(wide(p->settings)));
             p->host={sizeof(MercPluginHost),MERCENARIES_PLUGIN_API_VERSION,p.get(),
                 p->manifest.id.c_str(),p->directory.c_str(),p->settings.c_str(),plugin_log,read_guest,write_guest,
-                call_guest,guest_scratch,in_gameplay,hook_guest,add_lua_command,set_tool_window,set_overlay};
+                call_guest,guest_scratch,in_gameplay,hook_guest,add_lua_command,set_tool_window,set_overlay,
+                set_text_input,read_text_input};
             p->callbacks.struct_size=sizeof(MercPlugin);p->callbacks.api_version=MERCENARIES_PLUGIN_API_VERSION;
             auto library=m.root/wide(m.library);
             // Own directory for dependencies; no working-directory or PATH search.
@@ -319,7 +348,7 @@ extern "C" int merc_plugins_update(void) {
         try {ok=p.callbacks.on_update(p.callbacks.userdata,&update);}catch(...) {ok=0;}
         updating=false;calling=nullptr;
         if(!ok) {
-            p.active=false;stopped.insert(p.manifest.id);set_tool(p,false);
+            p.active=false;stopped.insert(p.manifest.id);set_tool(p,false);release_text(&p);
             if(!failure.empty())failure+="\n";
             failure+=p.manifest.name+": update failed; this plugin and its dependents will receive no further updates. Restart the game after correcting the mod.";
             record(failure);
@@ -333,6 +362,24 @@ extern "C" int merc_plugins_hook_ready(void) {
 extern "C" void merc_plugins_hook_before(unsigned index,MercHookContext *call) {run_hooks(index,call,false);}
 extern "C" void merc_plugins_hook_after(unsigned index,MercHookContext *call) {run_hooks(index,call,true);}
 extern "C" void merc_plugins_set_tool_display(void (*callback)(int)) {tool_display=callback;}
+extern "C" void merc_plugins_set_text_capture(void (*callback)(int)) {text_capture=callback;}
+extern "C" int merc_plugins_text_key(unsigned message,unsigned key) {
+    std::lock_guard<std::mutex> guard(overlay_lock);
+    if(!text_owner)return 0;
+    uint32_t value=0;
+    if(message==WM_CHAR) {
+        if(key>=32&&key!=127)value=key;          /* printable; control characters come as keys */
+    } else if(message==WM_KEYDOWN) {
+        switch(key) {
+        case VK_RETURN:case VK_ESCAPE:case VK_BACK:case VK_TAB:case VK_DELETE:
+        case VK_HOME:case VK_END:case VK_LEFT:case VK_RIGHT:case VK_UP:case VK_DOWN:
+            value=MERC_KEY_FLAG|key;break;
+        default:break;
+        }
+    } else return 0;
+    if(value&&text_keys.size()<256)text_keys.push_back(value);
+    return 1;                                    /* the game doesn't see typing */
+}
 extern "C" void merc_plugins_each_overlay(void (*fn)(const void*,unsigned,unsigned,unsigned,unsigned)) {
     std::lock_guard<std::mutex> guard(overlay_lock);
     for(auto &entry:overlays) {

@@ -916,11 +916,19 @@ static void host_dev_display(int open){
 /* Plugin tool windows (Mercenaries Foundry): treated like the F9 panel. Called
  * on the guest thread, so the display change is posted to the window's thread. */
 void xbox_InputSetOverlayCapture(BOOL captured);
+static int g_plugin_text_open;
+/* A plugin's in-game console has the keyboard: the game ignores its input,
+ * but the display stays as it is (the console is drawn in the frame). */
+static void host_plugin_text(int open){
+    g_plugin_text_open=open;
+    if(open)xbox_InputSetOverlayCapture(TRUE);
+    else if(!g_dev_tools_open&&!g_plugin_tools_open)xbox_InputSetOverlayCapture(FALSE);
+}
 static void host_plugin_tools(int open){
     g_plugin_tools_open=open;
     g_host_tools_open=g_dev_tools_open||g_plugin_tools_open;
     if(open)xbox_InputSetOverlayCapture(TRUE);
-    else if(!g_dev_tools_open)xbox_InputSetOverlayCapture(FALSE);
+    else if(!g_dev_tools_open&&!g_plugin_text_open)xbox_InputSetOverlayCapture(FALSE);
     if(g_host_window&&recomp_options_display_mode()==RECOMP_DISPLAY_FULLSCREEN)
         PostMessageA(g_host_window,WM_RECOMP_DISPLAY,0,0);
 }
@@ -931,6 +939,7 @@ static void dev_bookmark(void) { preview_snapshot("USER-MARKER-DEV-MENU"); }
 static LRESULT CALLBACK host_window_proc(HWND hwnd, UINT message,
                                         WPARAM wparam, LPARAM lparam)
 {
+    if((message==WM_CHAR||message==WM_KEYDOWN)&&merc_plugins_text_key(message,(unsigned)wparam))return 0;
     if(recomp_controls_message(hwnd,message,wparam,lparam))return message==WM_SETCURSOR ? TRUE : 0;
     switch (message) {
     case WM_ACTIVATEAPP:
@@ -1078,6 +1087,7 @@ static BOOL host_graphics_init(HINSTANCE instance, int show_command)
     recomp_dev_menu_init(g_host_window, dev_bookmark);
     recomp_dev_menu_set_display_callback(host_dev_display);
     merc_plugins_set_tool_display(host_plugin_tools);
+    merc_plugins_set_text_capture(host_plugin_text);
     recomp_dev_overlay_init();
     g_host_ready=1;
     recomp_controls_init(g_host_window);
