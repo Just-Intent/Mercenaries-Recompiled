@@ -2937,6 +2937,40 @@ void recomp_foundry_hook_call(unsigned index, uint32_t address, recomp_func_t bo
     g_foundry_hook_busy[index] = 0;
 }
 
+/* ----- Plugin script commands (Mercenaries Foundry) -----
+ * Lua calls a C function through its guest address (RECOMP_ICALL), which
+ * checks recomp_lookup_manual first. Plugin command n is registered at
+ * FOUNDRY_LUA_BASE + 4n; these trampolines run it as a __cdecl
+ * int f(lua_State *L): read L, call the plugin, pop the return address,
+ * return the result count in EAX. */
+static void foundry_lua_call(unsigned index)
+{
+    uint32_t L = guest_u32(g_esp + 4u);
+    int results = merc_plugins_lua_command(index, L);
+    g_esp += 4u;
+    g_eax = (uint32_t)(results > 0 ? results : 0);
+}
+#define FOUNDRY_LUA_T(g, k) static void foundry_lua_##g##_##k(void) { foundry_lua_call(8u * (g) + (k)); }
+#define FOUNDRY_LUA_T8(g) FOUNDRY_LUA_T(g, 0) FOUNDRY_LUA_T(g, 1) FOUNDRY_LUA_T(g, 2) FOUNDRY_LUA_T(g, 3) \
+    FOUNDRY_LUA_T(g, 4) FOUNDRY_LUA_T(g, 5) FOUNDRY_LUA_T(g, 6) FOUNDRY_LUA_T(g, 7)
+FOUNDRY_LUA_T8(0) FOUNDRY_LUA_T8(1) FOUNDRY_LUA_T8(2) FOUNDRY_LUA_T8(3)
+FOUNDRY_LUA_T8(4) FOUNDRY_LUA_T8(5) FOUNDRY_LUA_T8(6) FOUNDRY_LUA_T8(7)
+#define FOUNDRY_LUA_P8(g) foundry_lua_##g##_0, foundry_lua_##g##_1, foundry_lua_##g##_2, foundry_lua_##g##_3, \
+    foundry_lua_##g##_4, foundry_lua_##g##_5, foundry_lua_##g##_6, foundry_lua_##g##_7
+static const recomp_func_t foundry_lua_trampolines[FOUNDRY_LUA_MAX] = {
+    FOUNDRY_LUA_P8(0), FOUNDRY_LUA_P8(1), FOUNDRY_LUA_P8(2), FOUNDRY_LUA_P8(3),
+    FOUNDRY_LUA_P8(4), FOUNDRY_LUA_P8(5), FOUNDRY_LUA_P8(6), FOUNDRY_LUA_P8(7),
+};
+
+static recomp_func_t foundry_lua_lookup(uint32_t xbox_va)
+{
+    uint32_t n;
+    if (xbox_va < FOUNDRY_LUA_BASE || (xbox_va & 3u))
+        return NULL;
+    n = (xbox_va - FOUNDRY_LUA_BASE) / 4u;
+    return n < FOUNDRY_LUA_MAX && n < merc_plugins_lua_count() ? foundry_lua_trampolines[n] : NULL;
+}
+
 static void recomp_guard_cancel_owner(uint32_t owner);
 static void recomp_guard_request(uint32_t vm, uint32_t handle);
 static void recomp_guard_callback(uint32_t vm);
@@ -17186,6 +17220,9 @@ static void mercenaries_voiceover_stop_callback(void)
 
 recomp_func_t recomp_lookup_manual(uint32_t xbox_va)
 {
+    recomp_func_t foundry_command = foundry_lua_lookup(xbox_va);
+    if (foundry_command)
+        return foundry_command;
     switch (xbox_va) {
     case 0x0011EA00:
         return mercenaries_voiceover_stop_callback;

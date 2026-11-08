@@ -23,6 +23,18 @@ void recomp_foundry_hook_enable(unsigned index);
 int merc_plugins_hook_ready(void);                 /* on the owner thread, initialized */
 void merc_plugins_hook_before(unsigned index, MercHookContext *call);
 void merc_plugins_hook_after(unsigned index, MercHookContext *call);
+/* Plugin script commands: command n has the guest address FOUNDRY_LUA_BASE +
+ * 4n (in the XBE header, where no code lives); recomp_lookup_manual maps it
+ * to a trampoline that calls merc_plugins_lua_command. */
+#define FOUNDRY_LUA_BASE 0x00010F00u
+#define FOUNDRY_LUA_MAX 64u
+#define FOUNDRY_LUASCRIPT_REGISTER_COMMANDS 0x00112830u /* LuaScript_RegisterCommands */
+#define FOUNDRY_LUA_PUSHSTRING 0x001DD000u
+#define FOUNDRY_LUA_PUSHCCLOSURE 0x001DD0D0u
+#define FOUNDRY_LUA_SETTABLE 0x001DD380u
+#define FOUNDRY_LUA_GLOBALSINDEX 0xFFFFD8EFu /* -10001 */
+unsigned merc_plugins_lua_count(void);
+int merc_plugins_lua_command(unsigned index, uint32_t L);
 #ifdef __cplusplus
 }
 #endif

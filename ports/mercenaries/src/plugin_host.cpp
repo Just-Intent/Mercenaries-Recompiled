@@ -69,6 +69,10 @@ bool accessible(void *address,size_t bytes,bool write) {
         if(next<=p)return false;p=next;
     }return true;
 }
+bool span_raw(uint32_t address,size_t bytes) {
+    return guest&&bytes&&address>=0x10000u&&address<guest_size&&bytes<=guest_size-address&&
+        (guest_ok||accessible(static_cast<unsigned char*>(guest)+address,bytes,true));
+}
 bool span(void *ctx,uint32_t address,size_t bytes,bool write) {
     return GetCurrentThreadId()==owner&&calling&&ctx==calling&&guest&&bytes&&
         address>=0x10000u&&address<guest_size&&bytes<=guest_size-address&&
@@ -84,6 +88,7 @@ int MERC_PLUGIN_CALL write_guest(void *ctx,uint32_t address,const void *data,siz
 }
 bool updating=false;
 int hooking=0;
+int in_lua=0;
 struct Hook {Loaded *plugin;MercHookFn before,after;void *userdata;};
 std::map<unsigned,std::vector<Hook>> hooks;
 void call_error(MercGuestCall *call,const char *message) {
@@ -93,15 +98,15 @@ int MERC_PLUGIN_CALL call_guest(void *ctx,MercGuestCall *call) {
     if(!call||!accessible(call,sizeof(MercGuestCall),true))return 0;
     if(call->struct_size<sizeof(MercGuestCall)){call_error(call,"MercGuestCall.struct_size is too small.");return 0;}
     call->error[0]=0;call->eax=call->edx=0;call->st0=0;
-    if(GetCurrentThreadId()!=owner||!calling||ctx!=calling||!(updating||hooking)) {
-        call_error(call,"Guest calls are only allowed inside on_update or a hook.");return 0;
+    if(GetCurrentThreadId()!=owner||!calling||ctx!=calling||!(updating||hooking||in_lua)) {
+        call_error(call,"Guest calls are only allowed inside on_update, a hook or a script command.");return 0;
     }
     if(call->arg_count>MERC_GUEST_CALL_MAX_ARGS){call_error(call,"Too many arguments.");return 0;}
     return recomp_plugin_call_guest(call->address,call->this_ptr,call->args,call->arg_count,
         &call->eax,&call->edx,&call->st0,call->error,sizeof(call->error));
 }
 int MERC_PLUGIN_CALL guest_scratch(void *ctx,uint32_t *address,uint32_t *bytes) {
-    if(GetCurrentThreadId()!=owner||!calling||ctx!=calling||!updating||!address||!bytes)return 0;
+    if(GetCurrentThreadId()!=owner||!calling||ctx!=calling||!(updating||hooking||in_lua)||!address||!bytes)return 0;
     return recomp_plugin_guest_scratch(address,bytes);
 }
 int MERC_PLUGIN_CALL in_gameplay(void *ctx) {
@@ -124,13 +129,61 @@ void run_hooks(unsigned index,MercHookContext *call,bool after) {
     Loaded *previous=calling;
     for(auto &h:it->second) {
         MercHookFn fn=after?h.after:h.before;
-        if(!fn||!h.plugin->active)continue;
+        if(!fn)continue;
+        if(!h.plugin) {fn(h.userdata,call);continue;} /* host-owned hook */
+        if(!h.plugin->active)continue;
         calling=h.plugin;++hooking;
         try {fn(h.userdata,call);}
         catch(...) {h.plugin->active=false;record(h.plugin->manifest.name+": a hook threw; the plugin is stopped.");}
         --hooking;
     }
     calling=previous;
+}
+/* ----- Plugin script commands ----- */
+struct LuaCommand {Loaded *plugin;std::string name;MercLuaFn fn;void *userdata;};
+std::vector<LuaCommand> lua_commands;
+bool lua_hooked=false;
+uint32_t guest_call(uint32_t address,unsigned count,const uint32_t *args) {
+    uint32_t eax=0,edx=0;double st0=0;char error[96];
+    if(!recomp_plugin_call_guest(address,0,args,count,&eax,&edx,&st0,error,sizeof(error)))
+        record(std::string("script command registration: ")+error);
+    return eax;
+}
+/* After the game registers its own commands on a script's Lua state, add ours. */
+void MERC_PLUGIN_CALL register_lua_commands(void *,MercHookContext *call) {
+    uint32_t L=0,scratch=0,size=0;
+    if(!span_raw(call->ecx+0x1Cu,4)||lua_commands.empty())return;
+    memcpy(&L,static_cast<unsigned char*>(guest)+call->ecx+0x1Cu,4);
+    if(!L||!recomp_plugin_guest_scratch(&scratch,&size)||size<64)return;
+    for(unsigned i=0;i<lua_commands.size();i++) {
+        const auto &c=lua_commands[i];
+        memcpy(static_cast<unsigned char*>(guest)+scratch,c.name.c_str(),c.name.size()+1);
+        uint32_t name_args[]={L,scratch},fn_args[]={L,FOUNDRY_LUA_BASE+4u*i,0},set_args[]={L,FOUNDRY_LUA_GLOBALSINDEX};
+        guest_call(FOUNDRY_LUA_PUSHSTRING,2,name_args);
+        guest_call(FOUNDRY_LUA_PUSHCCLOSURE,3,fn_args);
+        guest_call(FOUNDRY_LUA_SETTABLE,2,set_args);
+    }
+}
+bool command_name(const char *s) {
+    if(!s||!((*s>='A'&&*s<='Z')||(*s>='a'&&*s<='z')||*s=='_'))return false;
+    size_t n=0;
+    for(;s[n];n++)if(!((s[n]>='A'&&s[n]<='Z')||(s[n]>='a'&&s[n]<='z')||(s[n]>='0'&&s[n]<='9')||s[n]=='_'))return false;
+    return n<64;
+}
+int MERC_PLUGIN_CALL add_lua_command(void *ctx,const char *name,MercLuaFn fn,void *userdata) {
+    if(GetCurrentThreadId()!=owner||!calling||ctx!=calling||hooking||in_lua||!fn||!command_name(name))return 0;
+    if(lua_commands.size()>=FOUNDRY_LUA_MAX)return 0;
+    for(const auto &c:lua_commands)if(c.name==name)return 0;
+    if(!lua_hooked) {
+        int index=recomp_foundry_hook_index(FOUNDRY_LUASCRIPT_REGISTER_COMMANDS);
+        if(index<0)return 0; /* build without hook wrappers */
+        hooks[unsigned(index)].push_back({nullptr,nullptr,register_lua_commands,nullptr});
+        recomp_foundry_hook_enable(unsigned(index));
+        lua_hooked=true;
+    }
+    lua_commands.push_back({calling,name,fn,userdata});
+    record(calling->manifest.id+": added script command "+name);
+    return 1;
 }
 void shutdown_all() {
     for(auto it=loaded.rbegin();it!=loaded.rend();++it) {
@@ -182,7 +235,7 @@ extern "C" int merc_plugins_initialize(void *base,size_t bytes) {
             fs::create_directories(fs::path(wide(p->settings)));
             p->host={sizeof(MercPluginHost),MERCENARIES_PLUGIN_API_VERSION,p.get(),
                 p->manifest.id.c_str(),p->directory.c_str(),p->settings.c_str(),plugin_log,read_guest,write_guest,
-                call_guest,guest_scratch,in_gameplay,hook_guest};
+                call_guest,guest_scratch,in_gameplay,hook_guest,add_lua_command};
             p->callbacks.struct_size=sizeof(MercPlugin);p->callbacks.api_version=MERCENARIES_PLUGIN_API_VERSION;
             auto library=m.root/wide(m.library);
             // Own directory for dependencies; no working-directory or PATH search.
@@ -241,9 +294,22 @@ extern "C" int merc_plugins_hook_ready(void) {
 }
 extern "C" void merc_plugins_hook_before(unsigned index,MercHookContext *call) {run_hooks(index,call,false);}
 extern "C" void merc_plugins_hook_after(unsigned index,MercHookContext *call) {run_hooks(index,call,true);}
+extern "C" unsigned merc_plugins_lua_count(void) {return unsigned(lua_commands.size());}
+extern "C" int merc_plugins_lua_command(unsigned index,uint32_t L) {
+    if(!initialized||GetCurrentThreadId()!=owner||index>=lua_commands.size())return 0;
+    auto &c=lua_commands[index];
+    if(!c.plugin->active)return 0;
+    Loaded *previous=calling;
+    calling=c.plugin;++in_lua;int results=0;
+    try {results=c.fn(c.userdata,L);}
+    catch(...) {c.plugin->active=false;record(c.plugin->manifest.name+": script command "+c.name+" threw; the plugin is stopped.");}
+    --in_lua;calling=previous;
+    return results;
+}
 extern "C" void merc_plugins_shutdown(void) {
     if(GetCurrentThreadId()!=owner||dispatching)return;
     hooks.clear(); /* before any plugin DLL is unloaded */
+    lua_commands.clear();
     dispatching=true;shutdown_all();
 }
 

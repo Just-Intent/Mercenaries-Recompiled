@@ -46,6 +46,10 @@ typedef struct MercHookContext {
     uint32_t pop_bytes;
 } MercHookContext;
 typedef void (MERC_PLUGIN_CALL *MercHookFn)(void *userdata, MercHookContext *call);
+/* A script command: L is the guest lua_State. Read arguments and push results
+ * with call_guest on the game's Lua functions (Lua_ArgNumber, lua_pushnumber,
+ * ...); return the number of results pushed. Don't raise Lua errors. */
+typedef int (MERC_PLUGIN_CALL *MercLuaFn)(void *userdata, uint32_t L);
 typedef struct MercPluginHost {
     uint32_t struct_size, api_version;
     void *context;
@@ -56,10 +60,12 @@ typedef struct MercPluginHost {
     int (MERC_PLUGIN_CALL *read_guest)(void *, uint32_t, void *, size_t);
     int (MERC_PLUGIN_CALL *write_guest)(void *, uint32_t, const void *, size_t);
     /* Guest calls (appended; check MERC_PLUGIN_HOST_HAS before use). Valid only
-     * inside on_update, on the game's own thread, at its input checkpoint. */
+     * on the game's own thread: inside on_update (its input checkpoint), a hook
+     * callback or a script command. */
     int (MERC_PLUGIN_CALL *call_guest)(void *, MercGuestCall *);
-    /* Guest memory free for this update (strings, matrices passed to calls):
-     * returns 1 and an address/size, or 0. Contents don't survive the update. */
+    /* Guest memory free for now (strings, matrices passed to calls), in the
+     * same places as call_guest: returns 1 and an address/size, or 0. Contents
+     * don't survive the current update, hook or command. */
     int (MERC_PLUGIN_CALL *guest_scratch)(void *, uint32_t *, uint32_t *);
     /* 1 while normal gameplay is running (not menus or loading). */
     int (MERC_PLUGIN_CALL *in_gameplay)(void *);
@@ -69,6 +75,10 @@ typedef struct MercPluginHost {
      * 0 otherwise. Register from init or on_update; hooks last until shutdown.
      * Callbacks may use read_guest, write_guest, call_guest and log. */
     int (MERC_PLUGIN_CALL *hook_guest)(void *, uint32_t, MercHookFn, MercHookFn, void *);
+    /* Add a global script command (name: letters, digits and _, up to 63) to
+     * every script loaded from now on. Call it from init. Returns 0 if the
+     * name is taken or invalid, or the build can't add commands. */
+    int (MERC_PLUGIN_CALL *add_lua_command)(void *, const char *, MercLuaFn, void *);
 } MercPluginHost;
 /* True when the host provides a field (older hosts have a smaller struct). */
 #define MERC_PLUGIN_HOST_HAS(host, field) \
