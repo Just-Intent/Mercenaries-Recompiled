@@ -476,6 +476,13 @@ int main(int argc,char**argv){
  /* Vehicle rate integrates to the same movement at 30 / 60 updates. */
  play(1);update_mouse();g_dx=4;float a=recomp_controls_mouse_axis(0xEAA0CE27,0,1.f/30);
  g_dx=2;float b=recomp_controls_mouse_axis(0xEAA0CE27,0,1.f/60);assert(fabsf(a-b)<.00001f);
+ /* Vehicles get VehicleMouseGain (percent) on top of the on-foot scale. */
+ g_vehicle_gain=100;g_dx=2;float c=recomp_controls_mouse_axis(0xEAA0CE27,0,1.f/60);
+ g_vehicle_gain=200;assert(fabsf(b-2*c)<.00001f);
+ /* A swipe past full deflection keeps its rest for the next updates (a tank). */
+ play(3);update_mouse();assert(g_joystick_context==2);g_dx=1000;
+ assert(recomp_controls_mouse_axis(0xEAA0CE27,0,1.f/60)==1.f);assert(g_dx>0 && g_dx<1000);
+ assert(recomp_controls_mouse_axis(0xEAA0CE27,0,1.f/60)==1.f);g_dx=0;
  /* Sniper shares bindings but still uses the scope's mechanical mouse path. */
  play(10);update_mouse();assert(g_context==SCOPE_CONTEXT && g_joystick_context==9);
  g_dx=2;assert(recomp_controls_mouse_axis(0xEAA0CE27,0,1.f/60)>0);assert(!g_dx);
