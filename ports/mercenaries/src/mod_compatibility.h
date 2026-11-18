@@ -6,6 +6,8 @@
 /* Read once before memory initialization; settings take effect on restart. */
 void recomp_mod_compatibility_init(void);
 int recomp_mod_expanded_world_properties(void);
+/* A 16 MiB larger main heap; needs extended_graphics_memory. */
+int recomp_mod_expanded_game_heap(void);
 
 /* Unmapped identifiers retain retail behavior. */
 int recomp_mod_support_faction(uint32_t key);

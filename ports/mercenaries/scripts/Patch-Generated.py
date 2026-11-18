@@ -14667,6 +14667,33 @@ PATCHES += (
         "    PUSH32(esp, eax == 0x04000000u ? 0x03FF0000u : 0x1680000u);"),
 )
 
+# The main heap's size, descriptor count and table come from
+# recomp_game_heap.c: retail unless expanded_game_heap=1 (src/recomp_game_heap.c).
+PATCHES += (
+    GeneratedPatch("Optional expanded main heap allocation",
+        "loc_001806B4: ;\n    PUSH32(esp, 0x129999A);\n"
+        "    PUSH32(esp, 0); sub_00238533(); /* call 0x00238533 */",
+        "loc_001806B4: ;\n"
+        "    { uint32_t recomp_game_heap_allocation(void);\n"
+        "      PUSH32(esp, recomp_game_heap_allocation()); }\n"
+        "    PUSH32(esp, 0); sub_00238533(); /* call 0x00238533 */"),
+    GeneratedPatch("Optional expanded main heap capacity",
+        "loc_001806BE: ;\n    PUSH32(esp, 0x1B58);\n"
+        "    PUSH32(esp, 0x406298);\n    PUSH32(esp, 0x129599A);\n"
+        "    PUSH32(esp, eax);",
+        "loc_001806BE: ;\n"
+        "    { void recomp_game_heap_check(uint32_t);\n"
+        "      uint32_t recomp_game_heap_blocks(void), recomp_game_heap_table(void),\n"
+        "               recomp_game_heap_size(void);\n"
+        "      uint32_t _heap_base = eax;\n"
+        "      recomp_game_heap_check(_heap_base);\n"
+        "      PUSH32(esp, recomp_game_heap_blocks());\n"
+        "      PUSH32(esp, recomp_game_heap_table());\n"
+        "      PUSH32(esp, recomp_game_heap_size());\n"
+        "      eax = _heap_base; }\n"
+        "    PUSH32(esp, eax);"),
+)
+
 
 # Extend the permanent-property array only when the mod property option is enabled.
 PATCHES += (

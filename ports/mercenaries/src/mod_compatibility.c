@@ -7,7 +7,7 @@
 
 #include "mod_gameplay.h"
 
-static int expanded_world_properties;
+static int expanded_world_properties, expanded_game_heap;
 static int faction_support, impact_stun_ammo, extra_grenade_slot;
 
 enum { MOD_MAPPING_LIMIT = 512, MOD_SECTION_SIZE = 65536 };
@@ -93,7 +93,7 @@ void recomp_mod_compatibility_init(void)
     char path[MAX_PATH];
     int extended_graphics = 0;
     DWORD length = GetModuleFileNameA(NULL, path, MAX_PATH);
-    expanded_world_properties = 0;
+    expanded_world_properties = expanded_game_heap = 0;
     faction_support = impact_stun_ammo = extra_grenade_slot = 0;
     support_count = impact_count = 0;
     if (length && length < MAX_PATH) {
@@ -106,6 +106,8 @@ void recomp_mod_compatibility_init(void)
                     "Mods", "extended_graphics_memory", 0, path) == 1;
                 expanded_world_properties = GetPrivateProfileIntA(
                     "Mods", "expanded_world_properties", 0, path) == 1;
+                expanded_game_heap = GetPrivateProfileIntA(
+                    "Mods", "expanded_game_heap", 0, path) == 1;
                 faction_support = GetPrivateProfileIntA("Mods", "faction_support", 0, path) == 1;
                 impact_stun_ammo = GetPrivateProfileIntA("Mods", "impact_stun_ammo", 0, path) == 1;
                 extra_grenade_slot = GetPrivateProfileIntA("Mods", "extra_grenade_slot", 0, path) == 1;
@@ -125,4 +127,9 @@ void recomp_mod_compatibility_init(void)
 int recomp_mod_expanded_world_properties(void)
 {
     return expanded_world_properties;
+}
+
+int recomp_mod_expanded_game_heap(void)
+{
+    return expanded_game_heap;
 }

@@ -165,6 +165,10 @@ ptrdiff_t xbox_GetMemoryOffset(void);
  */
 uint32_t xbox_HeapAlloc(uint32_t size, uint32_t alignment);
 
+/** Bytes not yet handed out between the heap's two frontiers (released
+ * ranges available for reuse are not counted). */
+uint32_t xbox_HeapFrontierBytes(void);
+
 /** Allocate complete 4 KiB guest pages while retaining the caller's required
  * base alignment. Xbox physical/contiguous allocations own every page they
  * touch; sharing an unused tail with pool memory corrupts both allocators. */

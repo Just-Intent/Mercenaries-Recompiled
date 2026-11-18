@@ -59,6 +59,7 @@ set(GAME_SOURCES
     src/mod_saves.cpp
     src/mod_extensions.c
     src/recomp_world_properties.c
+    src/recomp_game_heap.c
     src/shop_config.c
     src/audio_bank_fixes.c
     src/ps2_upgrades.c

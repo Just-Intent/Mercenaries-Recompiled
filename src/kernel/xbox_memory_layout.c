@@ -1223,6 +1223,11 @@ static uint32_t xbox_HeapAllocClass(
     return result;
 }
 
+uint32_t xbox_HeapFrontierBytes(void)
+{
+    return g_heap_page_next > g_heap_next ? g_heap_page_next - g_heap_next : 0u;
+}
+
 uint32_t xbox_HeapAlloc(uint32_t size, uint32_t alignment)
 {
     return xbox_HeapAllocClass(

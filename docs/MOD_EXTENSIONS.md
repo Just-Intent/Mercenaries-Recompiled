@@ -25,6 +25,21 @@ Each switch defaults to `0` and can be enabled independently. Keep
 The switches do not create assets, crates, weapons, or catalog entries;
 those still come from the mod's data.
 
+## Main heap
+
+The game keeps most of its objects, streamed models and scripts in one fixed
+18.6 MiB heap created at startup (retail 0x1806A0). A large map can fill it
+while streaming; the retail allocator then waits forever for memory instead
+of failing, and rewrites `PoiDump.htm` while it waits.
+
+`expanded_game_heap=1` in `[Mods]` adds 16 MiB to that heap and raises its
+block descriptors from 7,000 to 16,384. It needs `extended_graphics_memory=1`:
+the graphics bank moves the retail 22.5 MiB texture pool out of the lower
+64 MiB, and the bigger heap uses part of the room that frees. Without the
+graphics bank the option is ignored and stderr says so. With it, stderr logs
+the heap size and the lower bank's free room at startup. The option is not
+yet tested in game.
+
 ## Supplier factions and support prices
 
 With `faction_support=1`, `[SupportFactions]` associates an item with its supplier.
