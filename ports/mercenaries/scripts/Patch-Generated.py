@@ -15008,5 +15008,30 @@ PATCHES += (
         "static void sub_002A405F_apu_locked(void)\n{\n"),
 )
 
+# The world's object-state store has fixed tables the retail adder never
+# checks; a dense modded world filled one and the next record overwrote the
+# tables after it (load crash at 0x1EAD00, scribbles through the damaged
+# tables). recomp_manual.c: recomp_guard_world_state_add / _lookup.
+PATCHES += (
+    GeneratedPatch("Bound the world object-state store: adder",
+        "loc_001ECED0: ;\n    esp = esp - 0xC;\n    PUSH32(esp, ebx);",
+        "loc_001ECED0: ;\n"
+        "    { int recomp_guard_world_state_add(uint32_t);\n"
+        "      if (recomp_guard_world_state_add(ecx)) { esp += 12; return; } }\n"
+        "    esp = esp - 0xC;\n    PUSH32(esp, ebx);"),
+    GeneratedPatch("Bound the world object-state store: A lookup",
+        "loc_001EAD00: ;\n    edx = MEM32(esp + 4);\n    PUSH32(esp, esi);",
+        "loc_001EAD00: ;\n"
+        "    { int recomp_guard_world_state_lookup(uint32_t,uint32_t,uint32_t,uint32_t);\n"
+        "      if (recomp_guard_world_state_lookup(ecx, MEM32(esp + 4), 0x3414u, 4u)) { eax = 0; esp += 8; return; } }\n"
+        "    edx = MEM32(esp + 4);\n    PUSH32(esp, esi);"),
+    GeneratedPatch("Bound the world object-state store: C lookup",
+        "loc_001EACC0: ;\n    eax = MEM32(esp + 4);\n    edx = MEM32(ecx + eax * 4 + 0x4854);",
+        "loc_001EACC0: ;\n"
+        "    { int recomp_guard_world_state_lookup(uint32_t,uint32_t,uint32_t,uint32_t);\n"
+        "      if (recomp_guard_world_state_lookup(ecx, MEM32(esp + 4), 0x4854u, 256u)) { eax = 0; esp += 8; return; } }\n"
+        "    eax = MEM32(esp + 4);\n    edx = MEM32(ecx + eax * 4 + 0x4854);"),
+)
+
 if __name__ == "__main__":
     main()

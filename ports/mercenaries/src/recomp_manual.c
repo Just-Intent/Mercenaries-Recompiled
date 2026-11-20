@@ -20047,3 +20047,60 @@ static void recomp_watch_write_table(const uint32_t *words)
     memcpy(guest_ptr(WATCH_LO), words, 12);
     if (on && g_watch_on) VirtualProtect((void *)g_watch_page, 4096, PAGE_READONLY, &old);
 }
+
+/* The world's object-state store (RedWorld; the object at [0x4434D0], 0x634070):
+ * what changed about the world's objects, kept for the save. Retail sizes it
+ * for 256 records of 0x34 bytes from +4, then counters +0x3404 (C),
+ * +0x3408 (D), +0x340C (A), +0x3410 (B), then tables: +0x3414 [256] record
+ * -> A, A entries of 12 bytes from +0x3814 and words from +0x3844 (4 of
+ * each, before +0x3854), B pairs from +0x3854 (512), +0x4854 [256] record ->
+ * C, C entries of 12 bytes from +0x4C54 and words from +0x5854 (256), D pairs
+ * from +0x5C54 (1024). The adder (0x1ECED0) checks none of them. A dense
+ * modded world (Gaza: shelling, a big map's destructibles) filled one, and
+ * the next record wrote floats and handles over the tables after it: the game
+ * crashed loading such a save (0x1EAD00 reading a float as an index) and
+ * earlier wrote through the damaged tables anywhere (the 0x30F048 table).
+ * A record that would overflow is now not added (that object's change isn't
+ * kept, logged), and the lookups refuse indexes outside their tables, so a
+ * save already damaged loads. */
+#define WS_RECORDS 256u
+#define WS_A 4u
+#define WS_B 512u
+#define WS_C 256u
+#define WS_D 1024u
+
+int recomp_guard_world_state_add(uint32_t s)
+{
+    static unsigned skipped;
+    if (!recomp_guard_guest_span(s, 0x7C58u))
+        return 0;
+    const uint32_t n = guest_u32(s), c = guest_u32(s + 0x3404u), d = guest_u32(s + 0x3408u),
+                   a = guest_u32(s + 0x340Cu), b = guest_u32(s + 0x3410u);
+    /* B and D take several per record (an object's links): keep some room */
+    if (n < WS_RECORDS && a < WS_A && b + 32u < WS_B && c < WS_C && d + 64u < WS_D)
+        return 0;
+    if (skipped++ < 16u || (skipped & 255u) == 0u)
+        xbox_preview_log_event("guest-guard",
+            "world state full: a change not kept for the save (records %u/%u, A %u/%u, B %u/%u, C %u/%u, "
+            "D %u/%u; %u skipped)", n, WS_RECORDS, a, WS_A, b, WS_B, c, WS_C, d, WS_D, skipped);
+    return 1;
+}
+
+/* 0x1EAD00 / 0x1EACC0: a record's A / C entry. Out of range: none. */
+int recomp_guard_world_state_lookup(uint32_t s, uint32_t record, uint32_t table, uint32_t cap)
+{
+    static unsigned reports;
+    if (!recomp_guard_guest_span(s, 0x7C58u) || record >= WS_RECORDS) {
+        if (reports++ < 8u)
+            xbox_preview_log_event("guest-guard", "world state lookup refused: record %u (store %08X)", record, s);
+        return 1;
+    }
+    const uint32_t v = guest_u32(s + table + record * 4u);
+    if (v == 0xFFFFFFFFu || v < cap)
+        return 0;
+    if (reports++ < 8u)
+        xbox_preview_log_event("guest-guard",
+            "world state damaged: record %u's table +0x%X holds %08X (the save was written past the store's end)",
+            record, table, v);
+    return 1;
+}
