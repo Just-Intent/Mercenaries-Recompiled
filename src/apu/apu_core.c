@@ -860,10 +860,18 @@ void mcpx_apu_dispatch_mmio(MCPXAPUState *d, hwaddr addr, uint64_t val,
                              unsigned int size, bool is_write)
 {
     if (addr >= 0x20000 && addr < 0x30000) {
-        /* VP region */
+        /* VP region. Voice methods edit the hardware voice lists (VOICE_ON,
+         * VOICE_OFF, antecedents) and read-modify-write voice descriptor
+         * words the APU thread's frame walks and updates. Run them under the
+         * device lock, as Xemu does, so a frame never follows a link the
+         * guest is halfway through changing: that reported idle voices
+         * DirectSound had already released, and its ISR then walked garbage
+         * (0x2A365B crashes in dense modded worlds). */
         hwaddr vp_addr = addr - 0x20000;
         if (is_write) {
+            qemu_mutex_lock(&d->lock);
             mcpx_apu_vp_write(d, vp_addr, val, size);
+            qemu_mutex_unlock(&d->lock);
         }
         /* VP reads handled by caller if needed */
     } else if (addr < 0x20000) {
@@ -1110,4 +1118,19 @@ static void mixer_render(int16_t frame_buf[][2], int num_samples)
             }
         }
     }
+}
+
+/* Serialize the game's own hardware voice-list edits (DirectSound's link
+ * routines 0x2A31D8, 0x2A365B and 0x2A405F, wrapped by Patch-Generated.py)
+ * with the APU thread's frame. The device lock is a CRITICAL_SECTION, so the
+ * method writes those routines make nest. */
+void recomp_apu_list_lock(int on)
+{
+    MCPXAPUState *d = g_state;
+    if (!d)
+        return;
+    if (on)
+        qemu_mutex_lock(&d->lock);
+    else
+        qemu_mutex_unlock(&d->lock);
 }

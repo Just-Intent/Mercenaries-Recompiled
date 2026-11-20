@@ -19921,6 +19921,19 @@ static void recomp_guard_report(const char *what, uint32_t a, uint32_t b, uint32
 
 int recomp_guard_quat_from_matrix(uint32_t out, uint32_t matrix)
 {
+    /* Its next-axis table {1, 2, 0} at 0x30F048 is static data; the 0.222
+     * playtest crashed here with valid pointers and that table overwritten
+     * (an index of FF3E03FE). Put it back and say so: whatever scribbles on
+     * static data is the real fault. */
+    static const uint32_t next_axis[3] = {1u, 2u, 0u};
+    if (guest_u32(0x30F048u) != 1u || guest_u32(0x30F04Cu) != 2u || guest_u32(0x30F050u) != 0u) {
+        static unsigned repairs;
+        if (repairs++ < 16u)
+            xbox_preview_log_event("guest-guard",
+                "quaternion-from-matrix next-axis table at 0x30F048 was overwritten: %08X %08X %08X; restored",
+                guest_u32(0x30F048u), guest_u32(0x30F04Cu), guest_u32(0x30F050u));
+        memcpy(guest_ptr(0x30F048u), next_axis, sizeof(next_axis));
+    }
     if (recomp_guard_guest_span(out, 0x10u) && recomp_guard_guest_span(matrix, 0x30u))
         return 0;
     recomp_guard_report("quaternion-from-matrix 0x1F7D90", out, matrix, 0);

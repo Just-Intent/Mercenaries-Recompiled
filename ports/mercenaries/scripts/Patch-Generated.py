@@ -14970,5 +14970,43 @@ PATCHES += (
 )
 
 
+# DirectSound edits hardware voice links (descriptor +0x7C, list tops) on
+# the game thread while the APU thread walks them each frame: a frame could
+# follow a link to a voice already released and report it idle, and the ISR
+# then read garbage from its voice table (0x2A365B crashes). Hold the APU
+# device lock around the three routines that edit the links.
+PATCHES += (
+    GeneratedPatch("Serialize DirectSound voice-list edit 0x002A31D8 with the APU frame",
+        "void sub_002A31D8(void)\n{\n",
+        "static void sub_002A31D8_apu_locked(void);\n"
+        "void sub_002A31D8(void)\n{\n"
+        "    void recomp_apu_list_lock(int);\n"
+        "    recomp_apu_list_lock(1);\n"
+        "    sub_002A31D8_apu_locked();\n"
+        "    recomp_apu_list_lock(0);\n"
+        "}\n"
+        "static void sub_002A31D8_apu_locked(void)\n{\n"),
+    GeneratedPatch("Serialize DirectSound voice-list edit 0x002A365B with the APU frame",
+        "void sub_002A365B(void)\n{\n",
+        "static void sub_002A365B_apu_locked(void);\n"
+        "void sub_002A365B(void)\n{\n"
+        "    void recomp_apu_list_lock(int);\n"
+        "    recomp_apu_list_lock(1);\n"
+        "    sub_002A365B_apu_locked();\n"
+        "    recomp_apu_list_lock(0);\n"
+        "}\n"
+        "static void sub_002A365B_apu_locked(void)\n{\n"),
+    GeneratedPatch("Serialize DirectSound voice-list edit 0x002A405F with the APU frame",
+        "void sub_002A405F(void)\n{\n",
+        "static void sub_002A405F_apu_locked(void);\n"
+        "void sub_002A405F(void)\n{\n"
+        "    void recomp_apu_list_lock(int);\n"
+        "    recomp_apu_list_lock(1);\n"
+        "    sub_002A405F_apu_locked();\n"
+        "    recomp_apu_list_lock(0);\n"
+        "}\n"
+        "static void sub_002A405F_apu_locked(void)\n{\n"),
+)
+
 if __name__ == "__main__":
     main()
