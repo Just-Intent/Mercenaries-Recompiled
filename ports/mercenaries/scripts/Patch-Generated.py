@@ -14954,5 +14954,21 @@ PATCHES += (GeneratedPatch("Frame-rate independent direct-input slope sliding",
     'loc_0013E625: ;\n    recomp_xmm_loadss(xmm0v, eax); /* movss */',
     'loc_0013E625: ;\n    { void recomp_slope_slide_prepare(uint32_t, float, uint32_t, uint32_t);\n      recomp_slope_slide_prepare(esi, MEMF(ebp + 8u), esp + 0x24u, eax); }\n    recomp_xmm_loadss(xmm0v, eax); /* movss */'),)
 
+PATCHES += (
+    GeneratedPatch("Guard quaternion-from-matrix against stale objects",
+        "loc_001F7D90: ;\n    edx = MEM32(esp + 4);\n    recomp_xmm_loadss(xmm0v, edx); /* movss */",
+        "loc_001F7D90: ;\n"
+        "    { int recomp_guard_quat_from_matrix(uint32_t,uint32_t);\n"
+        "      if (recomp_guard_quat_from_matrix(ecx, MEM32(esp + 4))) { eax = ecx; esp += 8; return; } }\n"
+        "    edx = MEM32(esp + 4);\n    recomp_xmm_loadss(xmm0v, edx); /* movss */"),
+    GeneratedPatch("Guard DirectSound voice unlink against torn-down voices",
+        "loc_002A365B: ;\n    PUSH32(esp, ebp);\n    ebp = esp;\n    esp = esp - 0x1C;",
+        "loc_002A365B: ;\n"
+        "    { int recomp_guard_dsound_voice(uint32_t);\n"
+        "      if (recomp_guard_dsound_voice(ecx)) { esp += 8; return; } }\n"
+        "    PUSH32(esp, ebp);\n    ebp = esp;\n    esp = esp - 0x1C;"),
+)
+
+
 if __name__ == "__main__":
     main()

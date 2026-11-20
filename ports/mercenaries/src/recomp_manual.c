@@ -19862,3 +19862,85 @@ void recomp_slope_slide_prepare(uint32_t physics, float dt,
         (float *)((uintptr_t)g_xbox_mem_offset + desired_va),
         (float *)((uintptr_t)g_xbox_mem_offset + gravity_va));
 }
+
+/* Guards for two retail routines that crash on stale objects in dense modded
+ * worlds (the Gaza map, toolkit 0.203-0.221 playtests), found from the
+ * preview log's crash records:
+ *
+ * 0x1F7D90 builds a quaternion at `this` from the 3x4 matrix in its argument
+ * (23 callers: Havok obstacles, animation, Actor_SetYaw...). Seven crashes,
+ * each as an actor woke about 220 m away, had `this` or the matrix outside
+ * guest memory (FFFFFFFC, C7F3AFE0). The guard leaves the output as it was
+ * and logs the native callers once each, so the stale owner can be found
+ * from mercenaries_recomp.map.
+ *
+ * 0x2A365B (DirectSound) unlinks a hardware voice from the APU voice lists.
+ * Flying over towns full of looping 3D sounds, it was handed voices already
+ * torn down: owner (+8) zero, list links (+0x4C, +0x50) outside guest memory.
+ * The voice is gone and its lists no longer hold it, so skipping it is what
+ * the routine would have left. */
+static int recomp_guard_guest_span(uint32_t p, uint32_t bytes)
+{
+    if (p >= 0x10000u && bytes < 0x4000000u && p <= 0x4000000u - bytes)
+        return 1;
+    if (p >= 0x4000000u && p < 0x8000000u && bytes < 0x4000000u && p <= 0x8000000u - bytes) {
+        MEMORY_BASIC_INFORMATION mbi;
+        const void *host = (const void *)((uintptr_t)g_xbox_mem_offset + p);
+        return VirtualQuery(host, &mbi, sizeof(mbi)) && mbi.State == MEM_COMMIT &&
+            !(mbi.Protect & (PAGE_GUARD | PAGE_NOACCESS)) &&
+            (uintptr_t)host + bytes <= (uintptr_t)mbi.BaseAddress + mbi.RegionSize;
+    }
+    return 0;
+}
+
+static void recomp_guard_report(const char *what, uint32_t a, uint32_t b, uint32_t c)
+{
+    static unsigned reports;
+    static uintptr_t seen[32];
+    static unsigned seen_count;
+    void *frames[4] = {0};
+    const uintptr_t base = (uintptr_t)GetModuleHandleW(NULL);
+    USHORT n = CaptureStackBackTrace(2, 4, frames, NULL);
+    uintptr_t key = n ? (uintptr_t)frames[0] : 0;
+    ++reports;
+    for (unsigned i = 0; i < seen_count; ++i)
+        if (seen[i] == key) {
+            if ((reports & 255u) == 0u)
+                xbox_preview_log_event("guest-guard", "%s skipped %u times so far", what, reports);
+            return;
+        }
+    if (seen_count < 32u) seen[seen_count++] = key;
+    xbox_preview_log_event("guest-guard",
+        "%s skipped a stale object: %08X %08X %08X; native callers rva %llX %llX %llX %llX (count %u)",
+        what, a, b, c,
+        (unsigned long long)(n > 0 ? (uintptr_t)frames[0] - base : 0),
+        (unsigned long long)(n > 1 ? (uintptr_t)frames[1] - base : 0),
+        (unsigned long long)(n > 2 ? (uintptr_t)frames[2] - base : 0),
+        (unsigned long long)(n > 3 ? (uintptr_t)frames[3] - base : 0), reports);
+}
+
+int recomp_guard_quat_from_matrix(uint32_t out, uint32_t matrix)
+{
+    if (recomp_guard_guest_span(out, 0x10u) && recomp_guard_guest_span(matrix, 0x30u))
+        return 0;
+    recomp_guard_report("quaternion-from-matrix 0x1F7D90", out, matrix, 0);
+    return 1;
+}
+
+int recomp_guard_dsound_voice(uint32_t voice)
+{
+    if (recomp_guard_guest_span(voice, 0x70u)) {
+        const uint32_t owner = guest_u32(voice + 8u);
+        const uint32_t next = guest_u32(voice + 0x4Cu), prev = guest_u32(voice + 0x50u);
+        /* a zero link runs as retail's would; only a torn-down owner or a
+         * link into unmapped memory (what crashed) skips */
+        if (recomp_guard_guest_span(owner, 0x4D0u) &&
+            (!next || recomp_guard_guest_span(next, 0x10u)) &&
+            (!prev || recomp_guard_guest_span(prev, 0x10u)))
+            return 0;
+        recomp_guard_report("dsound-voice-unlink 0x2A365B", voice, owner, next);
+        return 1;
+    }
+    recomp_guard_report("dsound-voice-unlink 0x2A365B", voice, 0, 0);
+    return 1;
+}
