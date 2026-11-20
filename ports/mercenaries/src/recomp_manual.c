@@ -19919,8 +19919,12 @@ static void recomp_guard_report(const char *what, uint32_t a, uint32_t b, uint32
         (unsigned long long)(n > 3 ? (uintptr_t)frames[3] - base : 0), reports);
 }
 
+static void recomp_watch_arm(void);
+static void recomp_watch_write_table(const uint32_t *words);
+
 int recomp_guard_quat_from_matrix(uint32_t out, uint32_t matrix)
 {
+    recomp_watch_arm();                  /* once: catch whoever overwrites the table */
     /* Its next-axis table {1, 2, 0} at 0x30F048 is static data; the 0.222
      * playtest crashed here with valid pointers and that table overwritten
      * (an index of FF3E03FE). Put it back and say so: whatever scribbles on
@@ -19932,7 +19936,7 @@ int recomp_guard_quat_from_matrix(uint32_t out, uint32_t matrix)
             xbox_preview_log_event("guest-guard",
                 "quaternion-from-matrix next-axis table at 0x30F048 was overwritten: %08X %08X %08X; restored",
                 guest_u32(0x30F048u), guest_u32(0x30F04Cu), guest_u32(0x30F050u));
-        memcpy(guest_ptr(0x30F048u), next_axis, sizeof(next_axis));
+        recomp_watch_write_table(next_axis);
     }
     if (recomp_guard_guest_span(out, 0x10u) && recomp_guard_guest_span(matrix, 0x30u))
         return 0;
@@ -19956,4 +19960,90 @@ int recomp_guard_dsound_voice(uint32_t voice)
     }
     recomp_guard_report("dsound-voice-unlink 0x2A365B", voice, 0, 0);
     return 1;
+}
+/* Write watch on the quaternion routine's next-axis table (0x30F048, 12
+ * bytes of static data): something keeps overwriting it in the Gaza
+ * playtests (FFFF0037 FFFF0057 FFFF005F: index-like words), always near a
+ * card character. Its host page is made read-only; a write there faults,
+ * and this handler logs the writer (native RVA, the guest function last
+ * entered, the value) for writes to the table, lets the write through with
+ * one single step, and protects the page again. Other writes to the page are
+ * let through the same way; if they come too often the watch turns itself
+ * off (logged). */
+#define WATCH_LO 0x30F048u
+#define WATCH_HI 0x30F054u
+static uintptr_t g_watch_page;
+static volatile LONG g_watch_on, g_watch_armed;
+static DWORD g_watch_step_thread;
+static unsigned g_watch_other, g_watch_logged;
+static DWORD g_watch_window;
+
+static LONG CALLBACK recomp_watch_handler(PEXCEPTION_POINTERS info)
+{
+    PEXCEPTION_RECORD r = info->ExceptionRecord;
+    DWORD old;
+    if (r->ExceptionCode == EXCEPTION_SINGLE_STEP && g_watch_step_thread == GetCurrentThreadId()) {
+        g_watch_step_thread = 0;
+        if (g_watch_on)
+            VirtualProtect((void *)g_watch_page, 4096, PAGE_READONLY, &old);
+        return EXCEPTION_CONTINUE_EXECUTION;
+    }
+    if (r->ExceptionCode != EXCEPTION_ACCESS_VIOLATION || r->NumberParameters < 2 ||
+        r->ExceptionInformation[0] != 1 || !g_watch_on)
+        return EXCEPTION_CONTINUE_SEARCH;
+    const uintptr_t addr = (uintptr_t)r->ExceptionInformation[1];
+    if (addr < g_watch_page || addr >= g_watch_page + 4096)
+        return EXCEPTION_CONTINUE_SEARCH;
+    const uint32_t guest = (uint32_t)(addr - (uintptr_t)g_xbox_mem_offset);
+    const uintptr_t base = (uintptr_t)GetModuleHandleW(NULL);
+    if (guest >= WATCH_LO - 3u && guest < WATCH_HI) {
+        if (g_watch_logged++ < 24u)
+            xbox_preview_log_event("guest-guard",
+                "write watch: 0x%08X written by native rva %llX (guest function %08X; eax %08X ecx %08X edx %08X "
+                "esi %08X edi %08X); table now %08X %08X %08X",
+                guest, (unsigned long long)((uintptr_t)r->ExceptionAddress - base),
+                (uint32_t)g_recomp_current_func, g_eax, g_ecx, g_edx, g_esi, g_edi,
+                guest_u32(WATCH_LO), guest_u32(WATCH_LO + 4u), guest_u32(WATCH_LO + 8u));
+    } else {
+        const DWORD now = GetTickCount();
+        if (now - g_watch_window > 1000u) { g_watch_window = now; g_watch_other = 0; }
+        if (++g_watch_other > 2000u) {
+            InterlockedExchange(&g_watch_on, 0);
+            VirtualProtect((void *)g_watch_page, 4096, PAGE_READWRITE, &old);
+            xbox_preview_log_event("guest-guard",
+                "write watch off: the table's page is written too often by other code (last 0x%08X from rva %llX)",
+                guest, (unsigned long long)((uintptr_t)r->ExceptionAddress - base));
+            return EXCEPTION_CONTINUE_EXECUTION;
+        }
+    }
+    VirtualProtect((void *)g_watch_page, 4096, PAGE_READWRITE, &old);
+    g_watch_step_thread = GetCurrentThreadId();
+    info->ContextRecord->EFlags |= 0x100u;               /* one step, then protect again */
+    return EXCEPTION_CONTINUE_EXECUTION;
+}
+
+static void recomp_watch_arm(void)
+{
+    DWORD old;
+    if (InterlockedExchange(&g_watch_armed, 1) || getenv("MERCENARIES_NO_WRITE_WATCH"))
+        return;
+    g_watch_page = ((uintptr_t)g_xbox_mem_offset + WATCH_LO) & ~(uintptr_t)4095;
+    if (!AddVectoredExceptionHandler(1, recomp_watch_handler))
+        return;
+    InterlockedExchange(&g_watch_on, 1);
+    if (!VirtualProtect((void *)g_watch_page, 4096, PAGE_READONLY, &old)) {
+        InterlockedExchange(&g_watch_on, 0);
+        xbox_preview_log_event("guest-guard", "write watch unavailable (VirtualProtect failed: %lu)", GetLastError());
+        return;
+    }
+    xbox_preview_log_event("guest-guard", "write watch on the next-axis table 0x%08X-0x%08X", WATCH_LO, WATCH_HI - 1u);
+}
+
+static void recomp_watch_write_table(const uint32_t *words)
+{
+    DWORD old;
+    const int on = g_watch_on != 0;
+    if (on) VirtualProtect((void *)g_watch_page, 4096, PAGE_READWRITE, &old);
+    memcpy(guest_ptr(WATCH_LO), words, 12);
+    if (on && g_watch_on) VirtualProtect((void *)g_watch_page, 4096, PAGE_READONLY, &old);
 }
