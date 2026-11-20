@@ -19972,51 +19972,99 @@ int recomp_guard_dsound_voice(uint32_t voice)
  * off (logged). */
 #define WATCH_LO 0x30F048u
 #define WATCH_HI 0x30F054u
-static uintptr_t g_watch_page;
+/* The same RAM is mapped at several guest addresses: the primary view, the
+ * 64 MB mirrors and the contiguous-memory aliases (0x8xxxxxxx, 0xCxxxxxxx,
+ * mapped on demand), and DirectSound writes its voice data through those.
+ * 0.228 watched only the primary view and the table was overwritten unseen,
+ * so every view of the page is watched, and views mapped later are picked up
+ * as the guard runs. */
+static const uint32_t g_watch_prefixes[] = {
+    0x00000000u, 0x04000000u, 0x08000000u, 0x0C000000u, 0x80000000u, 0x84000000u, 0xC0000000u, 0xC4000000u};
+#define WATCH_VIEWS (sizeof(g_watch_prefixes) / sizeof(g_watch_prefixes[0]))
+static uintptr_t g_watch_pages[WATCH_VIEWS];
 static volatile LONG g_watch_on, g_watch_armed;
 static DWORD g_watch_step_thread;
-static unsigned g_watch_other, g_watch_logged;
+static unsigned g_watch_other, g_watch_logged, g_watch_scan;
 static DWORD g_watch_window;
+
+static void recomp_watch_protect(DWORD protection)
+{
+    DWORD old;
+    for (unsigned i = 0; i < WATCH_VIEWS; i++)
+        if (g_watch_pages[i])
+            VirtualProtect((void *)g_watch_pages[i], 4096, protection, &old);
+}
+
+static int recomp_watch_hit(uintptr_t addr)
+{
+    for (unsigned i = 0; i < WATCH_VIEWS; i++)
+        if (g_watch_pages[i] && addr >= g_watch_pages[i] && addr < g_watch_pages[i] + 4096)
+            return (int)i;
+    return -1;
+}
+
+/* views of the table's page not yet watched that are mapped now */
+static void recomp_watch_find_views(void)
+{
+    DWORD old;
+    unsigned added = 0;
+    for (unsigned i = 0; i < WATCH_VIEWS; i++) {
+        if (g_watch_pages[i])
+            continue;
+        const uintptr_t page = ((uintptr_t)g_xbox_mem_offset + g_watch_prefixes[i] + WATCH_LO) & ~(uintptr_t)4095;
+        MEMORY_BASIC_INFORMATION mbi;
+        if (!VirtualQuery((void *)page, &mbi, sizeof(mbi)) || mbi.State != MEM_COMMIT ||
+            (mbi.Protect & (PAGE_GUARD | PAGE_NOACCESS)))
+            continue;
+        if (VirtualProtect((void *)page, 4096, PAGE_READONLY, &old)) {
+            g_watch_pages[i] = page;
+            added++;
+        }
+    }
+    if (added)
+        xbox_preview_log_event("guest-guard", "write watch: %u more view(s) of the table's page watched", added);
+}
 
 static LONG CALLBACK recomp_watch_handler(PEXCEPTION_POINTERS info)
 {
     PEXCEPTION_RECORD r = info->ExceptionRecord;
-    DWORD old;
     if (r->ExceptionCode == EXCEPTION_SINGLE_STEP && g_watch_step_thread == GetCurrentThreadId()) {
         g_watch_step_thread = 0;
         if (g_watch_on)
-            VirtualProtect((void *)g_watch_page, 4096, PAGE_READONLY, &old);
+            recomp_watch_protect(PAGE_READONLY);
         return EXCEPTION_CONTINUE_EXECUTION;
     }
     if (r->ExceptionCode != EXCEPTION_ACCESS_VIOLATION || r->NumberParameters < 2 ||
         r->ExceptionInformation[0] != 1 || !g_watch_on)
         return EXCEPTION_CONTINUE_SEARCH;
     const uintptr_t addr = (uintptr_t)r->ExceptionInformation[1];
-    if (addr < g_watch_page || addr >= g_watch_page + 4096)
+    const int view = recomp_watch_hit(addr);
+    if (view < 0)
         return EXCEPTION_CONTINUE_SEARCH;
     const uint32_t guest = (uint32_t)(addr - (uintptr_t)g_xbox_mem_offset);
+    const uint32_t offset = guest - g_watch_prefixes[view];
     const uintptr_t base = (uintptr_t)GetModuleHandleW(NULL);
-    if (guest >= WATCH_LO - 3u && guest < WATCH_HI) {
+    if (offset >= WATCH_LO - 3u && offset < WATCH_HI) {
         if (g_watch_logged++ < 24u)
             xbox_preview_log_event("guest-guard",
-                "write watch: 0x%08X written by native rva %llX (guest function %08X; eax %08X ecx %08X edx %08X "
-                "esi %08X edi %08X); table now %08X %08X %08X",
-                guest, (unsigned long long)((uintptr_t)r->ExceptionAddress - base),
-                (uint32_t)g_recomp_current_func, g_eax, g_ecx, g_edx, g_esi, g_edi,
+                "write watch: 0x%08X (view %08X) written by native rva %llX on thread %lu (guest function %08X; "
+                "eax %08X ecx %08X edx %08X esi %08X edi %08X); table now %08X %08X %08X",
+                guest, g_watch_prefixes[view], (unsigned long long)((uintptr_t)r->ExceptionAddress - base),
+                GetCurrentThreadId(), (uint32_t)g_recomp_current_func, g_eax, g_ecx, g_edx, g_esi, g_edi,
                 guest_u32(WATCH_LO), guest_u32(WATCH_LO + 4u), guest_u32(WATCH_LO + 8u));
     } else {
         const DWORD now = GetTickCount();
         if (now - g_watch_window > 1000u) { g_watch_window = now; g_watch_other = 0; }
         if (++g_watch_other > 2000u) {
             InterlockedExchange(&g_watch_on, 0);
-            VirtualProtect((void *)g_watch_page, 4096, PAGE_READWRITE, &old);
+            recomp_watch_protect(PAGE_READWRITE);
             xbox_preview_log_event("guest-guard",
                 "write watch off: the table's page is written too often by other code (last 0x%08X from rva %llX)",
                 guest, (unsigned long long)((uintptr_t)r->ExceptionAddress - base));
             return EXCEPTION_CONTINUE_EXECUTION;
         }
     }
-    VirtualProtect((void *)g_watch_page, 4096, PAGE_READWRITE, &old);
+    recomp_watch_protect(PAGE_READWRITE);
     g_watch_step_thread = GetCurrentThreadId();
     info->ContextRecord->EFlags |= 0x100u;               /* one step, then protect again */
     return EXCEPTION_CONTINUE_EXECUTION;
@@ -20024,28 +20072,35 @@ static LONG CALLBACK recomp_watch_handler(PEXCEPTION_POINTERS info)
 
 static void recomp_watch_arm(void)
 {
-    DWORD old;
+    if (g_watch_armed) {
+        /* aliases are mapped on demand: look for new views now and then */
+        if (g_watch_on && (++g_watch_scan & 0xFFFFu) == 0u)
+            recomp_watch_find_views();
+        return;
+    }
     if (InterlockedExchange(&g_watch_armed, 1) || getenv("MERCENARIES_NO_WRITE_WATCH"))
         return;
-    g_watch_page = ((uintptr_t)g_xbox_mem_offset + WATCH_LO) & ~(uintptr_t)4095;
     if (!AddVectoredExceptionHandler(1, recomp_watch_handler))
         return;
     InterlockedExchange(&g_watch_on, 1);
-    if (!VirtualProtect((void *)g_watch_page, 4096, PAGE_READONLY, &old)) {
+    recomp_watch_find_views();
+    unsigned n = 0;
+    for (unsigned i = 0; i < WATCH_VIEWS; i++) n += g_watch_pages[i] != 0;
+    if (!n) {
         InterlockedExchange(&g_watch_on, 0);
-        xbox_preview_log_event("guest-guard", "write watch unavailable (VirtualProtect failed: %lu)", GetLastError());
+        xbox_preview_log_event("guest-guard", "write watch unavailable (no view of the page could be protected)");
         return;
     }
-    xbox_preview_log_event("guest-guard", "write watch on the next-axis table 0x%08X-0x%08X", WATCH_LO, WATCH_HI - 1u);
+    xbox_preview_log_event("guest-guard", "write watch on the next-axis table 0x%08X-0x%08X in %u view(s)",
+                           WATCH_LO, WATCH_HI - 1u, n);
 }
 
 static void recomp_watch_write_table(const uint32_t *words)
 {
-    DWORD old;
     const int on = g_watch_on != 0;
-    if (on) VirtualProtect((void *)g_watch_page, 4096, PAGE_READWRITE, &old);
+    if (on) recomp_watch_protect(PAGE_READWRITE);
     memcpy(guest_ptr(WATCH_LO), words, 12);
-    if (on && g_watch_on) VirtualProtect((void *)g_watch_page, 4096, PAGE_READONLY, &old);
+    if (on && g_watch_on) recomp_watch_protect(PAGE_READONLY);
 }
 
 /* The world's object-state store (RedWorld; the object at [0x4434D0], 0x634070):
