@@ -20098,7 +20098,12 @@ static void recomp_watch_arm(void)
             recomp_watch_find_views();
         return;
     }
-    if (InterlockedExchange(&g_watch_armed, 1) || getenv("MERCENARIES_NO_WRITE_WATCH"))
+    /* Off unless asked for (MERCENARIES_WRITE_WATCH=1): its page holds live
+     * game data written every frame, and with the watch on (each write a
+     * fault and a single step, then the watch turning itself off) the 0.236-
+     * 0.244 playtests lost the sky and kept on-screen text stuck, on every
+     * map. The table itself is repaired by recomp_guard_quat_from_matrix. */
+    if (InterlockedExchange(&g_watch_armed, 1) || !getenv("MERCENARIES_WRITE_WATCH"))
         return;
     if (!AddVectoredExceptionHandler(1, recomp_watch_handler))
         return;
