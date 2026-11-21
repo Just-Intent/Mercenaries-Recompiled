@@ -19961,6 +19961,26 @@ int recomp_guard_dsound_voice(uint32_t voice)
     recomp_guard_report("dsound-voice-unlink 0x2A365B", voice, 0, 0);
     return 1;
 }
+
+/* 0x2A3565 reads a DirectSound buffer's voice (this+0x70) for its level
+ * (volume/pitch, clamped to -32767..8191, written <<16 to *out). The 0.238
+ * playtest crashed in it with this = FFEFEBFB (a torn-down buffer) while
+ * the level changed from SW to Gaza. A buffer or voice outside guest memory
+ * gives level 0 instead, logged with the native callers. */
+int recomp_guard_dsound_level(uint32_t buffer, uint32_t out)
+{
+    if (recomp_guard_guest_span(buffer, 0x74u)) {
+        const uint32_t voice = guest_u32(buffer + 0x70u);
+        if (recomp_guard_guest_span(voice, 0xBCu) && recomp_guard_guest_span(out, 4u))
+            return 0;
+        recomp_guard_report("dsound-voice-level 0x2A3565", buffer, voice, out);
+    } else {
+        recomp_guard_report("dsound-voice-level 0x2A3565", buffer, 0, out);
+    }
+    if (recomp_guard_guest_span(out, 4u))
+        *(volatile uint32_t *)guest_ptr(out) = 0u;
+    return 1;
+}
 /* Write watch on the quaternion routine's next-axis table (0x30F048, 12
  * bytes of static data): something keeps overwriting it in the Gaza
  * playtests (FFFF0037 FFFF0057 FFFF005F: index-like words), always near a

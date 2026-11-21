@@ -15033,5 +15033,15 @@ PATCHES += (
         "    eax = MEM32(esp + 4);\n    edx = MEM32(ecx + eax * 4 + 0x4854);"),
 )
 
+PATCHES += (
+    GeneratedPatch("Guard DirectSound voice level read against torn-down voices",
+        "loc_002A3565: ;\n    edx = MEM32(ecx + 0x70);\n    PUSH32(esp, esi);",
+        "loc_002A3565: ;\n"
+        "    { int recomp_guard_dsound_level(uint32_t, uint32_t);\n"
+        "      if (recomp_guard_dsound_level(ecx, MEM32(esp + 4))) { eax = 0; esp += 8; return; } }\n"
+        "    edx = MEM32(ecx + 0x70);\n    PUSH32(esp, esi);"),
+)
+
+
 if __name__ == "__main__":
     main()
