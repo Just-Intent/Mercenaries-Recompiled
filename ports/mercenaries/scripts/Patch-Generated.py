@@ -15040,6 +15040,20 @@ PATCHES += (
         "    { int recomp_guard_dsound_level(uint32_t, uint32_t);\n"
         "      if (recomp_guard_dsound_level(ecx, MEM32(esp + 4))) { eax = 0; esp += 8; return; } }\n"
         "    edx = MEM32(ecx + 0x70);\n    PUSH32(esp, esi);"),
+    # Level_Load (0x184890), 0x187BA0 and 0x17A6D0 make a group with room for 0x40
+    # animation tables (0x636D0); the table loader (0x63E00) appends each new table
+    # to it without checking, so a level loading a 65th wrote past it (Gaza with
+    # three tables of its own crashed drawing its first frame, 0x28B180). The
+    # tables' shared hash index has 256 slots (0x63C30(0x100)).
+    GeneratedPatch("Animation table group room at 0017A6DA: 256 tables, not 64",
+        "loc_0017A6DA: ;\n    PUSH32(esp, 0x40);\n    PUSH32(esp, 0); sub_000636D0();",
+        "loc_0017A6DA: ;\n    PUSH32(esp, 0x100);   /* foundry: was 0x40; the loader (0x63E00) appends unchecked */\n    PUSH32(esp, 0); sub_000636D0();"),
+    GeneratedPatch("Animation table group room at 00184AE2: 256 tables, not 64",
+        "loc_00184AE2: ;\n    PUSH32(esp, 0x40);\n    PUSH32(esp, 0); sub_000636D0();",
+        "loc_00184AE2: ;\n    PUSH32(esp, 0x100);   /* foundry: was 0x40; the loader (0x63E00) appends unchecked */\n    PUSH32(esp, 0); sub_000636D0();"),
+    GeneratedPatch("Animation table group room at 00187DFE: 256 tables, not 64",
+        "loc_00187DFE: ;\n    PUSH32(esp, 0x40);\n    PUSH32(esp, 0); sub_000636D0();",
+        "loc_00187DFE: ;\n    PUSH32(esp, 0x100);   /* foundry: was 0x40; the loader (0x63E00) appends unchecked */\n    PUSH32(esp, 0); sub_000636D0();"),
 )
 
 
