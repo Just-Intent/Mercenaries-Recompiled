@@ -15054,6 +15054,59 @@ PATCHES += (
     GeneratedPatch("Animation table group room at 00187DFE: 256 tables, not 64",
         "loc_00187DFE: ;\n    PUSH32(esp, 0x40);\n    PUSH32(esp, 0); sub_000636D0();",
         "loc_00187DFE: ;\n    PUSH32(esp, 0x100);   /* foundry: was 0x40; the loader (0x63E00) appends unchecked */\n    PUSH32(esp, 0); sub_000636D0();"),
+    # The any-captive switch (0x32079C, a debug byte the game reads beside each
+    # human's IsVerifiable +0x808 at 15 places and never writes; Foundry Console
+    # sets it on a map with "any_captive") made every body verifiable: the verify
+    # prompt on every dead man (Gaza, 0.258) and no corpse cleanup (0x4FD20 reads
+    # +0x6A4 CorpseCleanUpAllowed beside it). Each reader now sees it only for a
+    # human who is subdued (+0x6B9, IsSubdued 0x54A80) and not dead (+0x6B8; the
+    # kill paths 0x4D050, 0x4D090, 0x53BF0 set it and clear +0x6B9); 0x5D55F
+    # (debug code under the switch) never sees it.
+    GeneratedPatch("Any-captive switch only for a live subdued human at 0003EC6A",
+        "loc_0003EC6A: ;\n    SET_LO8(eax, MEM8(0x32079C));",
+        "loc_0003EC6A: ;\n    SET_LO8(eax, ((MEM8(0x32079C) && MEM8(ecx + 0x6B9) && !MEM8(ecx + 0x6B8)) ? 1 : 0) /* foundry: the switch only for a live subdued human */);"),
+    GeneratedPatch("Any-captive switch only for a live subdued human at 0004EE42",
+        "loc_0004EE42: ;\n    SET_LO8(eax, MEM8(0x32079C));",
+        "loc_0004EE42: ;\n    SET_LO8(eax, ((MEM8(0x32079C) && MEM8(edi + 0x6B9) && !MEM8(edi + 0x6B8)) ? 1 : 0) /* foundry: the switch only for a live subdued human */);"),
+    GeneratedPatch("Any-captive switch only for a live subdued human at 0004F2FD",
+        "loc_0004F2FD: ;\n    SET_LO8(eax, MEM8(0x32079C));",
+        "loc_0004F2FD: ;\n    SET_LO8(eax, ((MEM8(0x32079C) && MEM8(esi + 0x6B9) && !MEM8(esi + 0x6B8)) ? 1 : 0) /* foundry: the switch only for a live subdued human */);"),
+    GeneratedPatch("Any-captive switch only for a live subdued human at 0004F465",
+        "loc_0004F465: ;\n    SET_LO8(eax, MEM8(0x32079C));",
+        "loc_0004F465: ;\n    SET_LO8(eax, ((MEM8(0x32079C) && MEM8(esi + 0x6B9) && !MEM8(esi + 0x6B8)) ? 1 : 0) /* foundry: the switch only for a live subdued human */);"),
+    GeneratedPatch("Any-captive switch only for a live subdued human at 0004F4C9",
+        "loc_0004F4C9: ;\n    SET_LO8(eax, MEM8(0x32079C));",
+        "loc_0004F4C9: ;\n    SET_LO8(eax, ((MEM8(0x32079C) && MEM8(esi + 0x6B9) && !MEM8(esi + 0x6B8)) ? 1 : 0) /* foundry: the switch only for a live subdued human */);"),
+    GeneratedPatch("Any-captive switch only for a live subdued human at 0004F549",
+        "loc_0004F549: ;\n    SET_LO8(eax, MEM8(0x32079C));",
+        "loc_0004F549: ;\n    SET_LO8(eax, ((MEM8(0x32079C) && MEM8(esi + 0x6B9) && !MEM8(esi + 0x6B8)) ? 1 : 0) /* foundry: the switch only for a live subdued human */);"),
+    GeneratedPatch("Any-captive switch only for a live subdued human at 0004FD34",
+        "loc_0004FD34: ;\n    SET_LO8(eax, MEM8(0x32079C));",
+        "loc_0004FD34: ;\n    SET_LO8(eax, ((MEM8(0x32079C) && MEM8(ecx + 0x6B9) && !MEM8(ecx + 0x6B8)) ? 1 : 0) /* foundry: the switch only for a live subdued human */);"),
+    GeneratedPatch("Any-captive switch only for a live subdued human at 00056084",
+        "loc_00056084: ;\n    SET_LO8(eax, MEM8(0x32079C));",
+        "loc_00056084: ;\n    SET_LO8(eax, ((MEM8(0x32079C) && MEM8(esi + 0x6B9) && !MEM8(esi + 0x6B8)) ? 1 : 0) /* foundry: the switch only for a live subdued human */);"),
+    GeneratedPatch("Any-captive switch only for a live subdued human at 00056A84",
+        "loc_00056A84: ;\n    SET_LO8(eax, MEM8(0x32079C));",
+        "loc_00056A84: ;\n    SET_LO8(eax, ((MEM8(0x32079C) && MEM8(esi + 0x6B9) && !MEM8(esi + 0x6B8)) ? 1 : 0) /* foundry: the switch only for a live subdued human */);"),
+    GeneratedPatch("Any-captive switch only for a live subdued human at 00056B94",
+        "loc_00056B94: ;\n    SET_LO8(eax, MEM8(0x32079C));",
+        "loc_00056B94: ;\n    SET_LO8(eax, ((MEM8(0x32079C) && MEM8(esi + 0x6B9) && !MEM8(esi + 0x6B8)) ? 1 : 0) /* foundry: the switch only for a live subdued human */);"),
+    GeneratedPatch("Any-captive switch only for a live subdued human at 00056FFD",
+        "loc_00056FFD: ;\n    SET_LO8(eax, MEM8(0x32079C));",
+        "loc_00056FFD: ;\n    SET_LO8(eax, ((MEM8(0x32079C) && MEM8(esi + 0x6B9) && !MEM8(esi + 0x6B8)) ? 1 : 0) /* foundry: the switch only for a live subdued human */);"),
+    GeneratedPatch("Any-captive switch only for nothing (debug path) at 0005D55F",
+        "loc_0005D55F: ;\n    SET_LO8(eax, MEM8(0x32079C));",
+        "loc_0005D55F: ;\n    SET_LO8(eax, 0 /* foundry: the any-captive switch is not for this debug path */);"),
+    GeneratedPatch("Any-captive switch only for a live subdued human at 00166BD2",
+        "loc_00166BD2: ;\n    SET_LO8(eax, MEM8(0x32079C));",
+        "loc_00166BD2: ;\n    SET_LO8(eax, ((MEM8(0x32079C) && MEM8(esi + 0x6B9) && !MEM8(esi + 0x6B8)) ? 1 : 0) /* foundry: the switch only for a live subdued human */);"),
+    GeneratedPatch("Any-captive switch only for a live subdued human at 0016772E",
+        "loc_0016772E: ;\n    if (((uint8_t)(MEM8(0x32079C)) != (uint8_t)(LO8(ebx)))) goto loc_00167838; /* jne: not equal / not zero */",
+        "loc_0016772E: ;\n    if (((uint8_t)(((MEM8(0x32079C) && MEM8(esi + 0x6B9) && !MEM8(esi + 0x6B8)) ? 1 : 0)) != (uint8_t)(LO8(ebx)))) goto loc_00167838; /* jne: not equal / not zero */"),
+    GeneratedPatch("Any-captive switch only for a live subdued human at 00167898",
+        "loc_00167898: ;\n    if (((uint8_t)(MEM8(0x32079C)) == (uint8_t)(LO8(ebx)))) goto loc_001678E8; /* je: equal / zero */",
+        "loc_00167898: ;\n    if (((uint8_t)(((MEM8(0x32079C) && MEM8(esi + 0x6B9) && !MEM8(esi + 0x6B8)) ? 1 : 0)) == (uint8_t)(LO8(ebx)))) goto loc_001678E8; /* je: equal / zero */"),
 )
 
 
