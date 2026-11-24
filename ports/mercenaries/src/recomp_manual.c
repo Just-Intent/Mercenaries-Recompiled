@@ -19981,6 +19981,30 @@ int recomp_guard_dsound_level(uint32_t buffer, uint32_t out)
         *(volatile uint32_t *)guest_ptr(out) = 0u;
     return 1;
 }
+
+/* Airstrike reactions by distance. An incoming strike (0x16C70, 0x16E00,
+ * 0x211E0) broadcasts message 0xEC013C64 through 0x30ECA0 to every human,
+ * and each plays fb_upright_airstrikereact (0x4DB50) wherever it is: retail's
+ * strikes are the player's own, called in nearby, but a script's strike far
+ * away (Gaza's, 150-700 m) made the player duck too. The senders note their
+ * strike object here; a human farther than RECOMP_STRIKE_REACT_M from it
+ * (world positions at +0x08) doesn't react. */
+#define RECOMP_STRIKE_REACT_M 100.0f
+uint32_t g_recomp_strike_obj;
+int recomp_strike_far(uint32_t human)
+{
+    const uint32_t s = g_recomp_strike_obj;
+    if (!s || !recomp_guard_guest_span(s, 0x14u) || !recomp_guard_guest_span(human, 0x14u))
+        return 0;
+    float a[3], b[3];
+    for (int i = 0; i < 3; i++) {
+        uint32_t u = guest_u32(s + 0x08u + 4u * (uint32_t)i), v = guest_u32(human + 0x08u + 4u * (uint32_t)i);
+        memcpy(&a[i], &u, 4);
+        memcpy(&b[i], &v, 4);
+    }
+    const float dx = a[0] - b[0], dy = a[1] - b[1], dz = a[2] - b[2];
+    return dx * dx + dy * dy + dz * dz > RECOMP_STRIKE_REACT_M * RECOMP_STRIKE_REACT_M;
+}
 /* Write watch on the quaternion routine's next-axis table (0x30F048, 12
  * bytes of static data): something keeps overwriting it in the Gaza
  * playtests (FFFF0037 FFFF0057 FFFF005F: index-like words), always near a

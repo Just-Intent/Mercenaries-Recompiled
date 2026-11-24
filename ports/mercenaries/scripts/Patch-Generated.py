@@ -15136,6 +15136,22 @@ PATCHES += (
     GeneratedPatch("Mission table room for 96 at 00254A00",
         "loc_00254A00: ;\n    PUSH32(esp, 0x209040);\n    PUSH32(esp, 0x40);\n    PUSH32(esp, 0x78);\n    PUSH32(esp, 0x3C0900);\n    PUSH32(esp, 0); sub_002378CF(); /* call 0x002378CF */\n\nloc_00254A13: ;\n    esp += 4; return; /* ret */\n",
         "loc_00254A00: ;\n    PUSH32(esp, 0x209040);\n    PUSH32(esp, 0x60);\n    PUSH32(esp, 0x78);\n    PUSH32(esp, 0x879000);\n    PUSH32(esp, 0); sub_002378CF(); /* call 0x002378CF */\n\nloc_00254A13: ;\n    esp += 4; return; /* ret */\n"),
+    # Airstrike reactions by distance: every incoming strike broadcasts 0xEC013C64
+    # to all humans and each ducks (fb_upright_airstrikereact, 0x4DB50) wherever it
+    # is; the three senders note their strike (g_recomp_strike_obj) and a human
+    # farther than 100 m from it doesn't react (recomp_strike_far, recomp_manual.c).
+    GeneratedPatch("Strike reaction: note the strike at 00016D2F",
+        "loc_00016D2F: ;\n    esp = esp + 0xC;\n    PUSH32(esp, 0xEC013C64u);\n    ecx = 0x30ECA0;\n    PUSH32(esp, 0); sub_001FDF10(); /* call 0x001FDF10 */",
+        "loc_00016D2F: ;\n    esp = esp + 0xC;\n    { extern uint32_t g_recomp_strike_obj; g_recomp_strike_obj = esi; }   /* foundry: the strike, for reactions by distance */\n    PUSH32(esp, 0xEC013C64u);\n    ecx = 0x30ECA0;\n    PUSH32(esp, 0); sub_001FDF10(); /* call 0x001FDF10 */\n    { extern uint32_t g_recomp_strike_obj; g_recomp_strike_obj = 0; }"),
+    GeneratedPatch("Strike reaction: note the strike at 00016EBF",
+        "loc_00016EBF: ;\n    esp = esp + 0x10;\n    PUSH32(esp, 0xEC013C64u);\n    ecx = 0x30ECA0;\n    PUSH32(esp, 0); sub_001FDF10(); /* call 0x001FDF10 */",
+        "loc_00016EBF: ;\n    esp = esp + 0x10;\n    { extern uint32_t g_recomp_strike_obj; g_recomp_strike_obj = esi; }   /* foundry: the strike, for reactions by distance */\n    PUSH32(esp, 0xEC013C64u);\n    ecx = 0x30ECA0;\n    PUSH32(esp, 0); sub_001FDF10(); /* call 0x001FDF10 */\n    { extern uint32_t g_recomp_strike_obj; g_recomp_strike_obj = 0; }"),
+    GeneratedPatch("Strike reaction: note the strike at 0002123A",
+        "loc_0002123A: ;\n    esp = esp + 0x34;\n    PUSH32(esp, 0xEC013C64u);\n    ecx = 0x30ECA0;\n    PUSH32(esp, 0); sub_001FDF10(); /* call 0x001FDF10 */",
+        "loc_0002123A: ;\n    esp = esp + 0x34;\n    { extern uint32_t g_recomp_strike_obj; g_recomp_strike_obj = esi; }   /* foundry: the strike, for reactions by distance */\n    PUSH32(esp, 0xEC013C64u);\n    ecx = 0x30ECA0;\n    PUSH32(esp, 0); sub_001FDF10(); /* call 0x001FDF10 */\n    { extern uint32_t g_recomp_strike_obj; g_recomp_strike_obj = 0; }"),
+    GeneratedPatch("Strike reaction: none far from the strike at 0004DB81",
+        "loc_0004DB81: ;\n    PUSH32(esp, 0);\n    PUSH32(esp, 0);\n    PUSH32(esp, 0xA7189AE5u);",
+        "loc_0004DB81: ;\n    { int recomp_strike_far(uint32_t); if (recomp_strike_far(esi)) goto loc_0004DB8F; }   /* foundry: too far to duck */\n    PUSH32(esp, 0);\n    PUSH32(esp, 0);\n    PUSH32(esp, 0xA7189AE5u);"),
 )
 
 
