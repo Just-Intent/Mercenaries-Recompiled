@@ -20327,6 +20327,46 @@ void recomp_scribble_load(uint32_t self, uint32_t src)
     recomp_scrib_put(self + 0x3010u, pool);
 }
 
+/* Wheels drawn on the centre line (0.296): a motorbike built on a car's
+ * skeleton keeps its physics wheels a little apart (Gaza's at x +-0.22, a
+ * zero track would fall over), so each axle drew two tyres side by side.
+ * 0x45C50 builds every wheel's drawn matrix each frame from its position in
+ * the vehicle's frame (esp+0x5C, also handed to the wheel's render node by
+ * 0x2035D0), the same for every wheel: no side is mirrored. A vehicle whose
+ * wheel model (its geometryNameWheel hash at +0x1080) is in the list at
+ * 0x87BF40 (count, then up to 15 hashes, in the free guest memory after the
+ * moved mission table; Foundry Console's Foundry_CentreWheels fills it) has
+ * that position's x set to 0, so a pair draws as one tyre and still spins and
+ * steers. A position too far out to be in the vehicle's frame is left. */
+#define RECOMP_CENTRE_WHEELS 0x87BF40u
+void recomp_wheel_centre(uint32_t vehicle, uint32_t pos)
+{
+    static unsigned logged;
+    const uint32_t n = guest_u32(RECOMP_CENTRE_WHEELS);
+    uint32_t model, i, u;
+    float x;
+    if (!n || n > 15u || !recomp_guard_guest_span(vehicle + 0x1080u, 4u) || !recomp_guard_guest_span(pos, 4u))
+        return;
+    model = guest_u32(vehicle + 0x1080u);
+    for (i = 0; i < n && guest_u32(RECOMP_CENTRE_WHEELS + 4u + 4u * i) != model; i++)
+        ;
+    if (i == n)
+        return;
+    u = guest_u32(pos);
+    memcpy(&x, &u, 4);
+    if (!(fabsf(x) < 4.0f)) {
+        if (logged < 4u) {
+            logged++;
+            fprintf(stderr, "[WHEEL-CENTRE] vehicle %08X: a wheel at x %.2f isn't in the vehicle's frame; left\n",
+                    vehicle, (double)x);
+        }
+        return;
+    }
+    x = 0.0f;
+    memcpy(&u, &x, 4);
+    *(volatile uint32_t *)guest_ptr(pos) = u;
+}
+
 #define RECOMP_STRIKE_REACT_M 100.0f
 uint32_t g_recomp_strike_obj;
 int recomp_strike_far(uint32_t human)
