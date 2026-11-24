@@ -15152,6 +15152,14 @@ PATCHES += (
     GeneratedPatch("Strike reaction: none far from the strike at 0004DB81",
         "loc_0004DB81: ;\n    PUSH32(esp, 0);\n    PUSH32(esp, 0);\n    PUSH32(esp, 0xA7189AE5u);",
         "loc_0004DB81: ;\n    { int recomp_strike_far(uint32_t); if (recomp_strike_far(esi)) goto loc_0004DB8F; }   /* foundry: too far to duck */\n    PUSH32(esp, 0);\n    PUSH32(esp, 0);\n    PUSH32(esp, 0xA7189AE5u);"),
+    # The fine for a death the player caused (0x56FD0, a human's die method: the
+    # player's money less 100.0, 0x2DC3DC, when the killer is the player's type)
+    # is skipped while the byte at 0x87BF00 (free guest memory after the moved
+    # mission table) is set: Foundry_MapFines(false) on a map with
+    # "collateral_fines": false, cleared before the next level loads.
+    GeneratedPatch("No fines switch at 000572BD",
+        "loc_000572BD: ;\n    recomp_xmm_loadss(xmm0v, edi + 0xAC4); /* movss */\n    xmm0 = xmm0 - MEMF(0x2DC3DC); /* subss */",
+        "loc_000572BD: ;\n    if (MEM8(0x87BF00u)) goto loc_000572DA;   /* foundry: no fine on a map that turns them off (Foundry_MapFines) */\n    recomp_xmm_loadss(xmm0v, edi + 0xAC4); /* movss */\n    xmm0 = xmm0 - MEMF(0x2DC3DC); /* subss */"),
 )
 
 
