@@ -20367,6 +20367,51 @@ void recomp_wheel_centre(uint32_t vehicle, uint32_t pos)
     *(volatile uint32_t *)guest_ptr(pos) = u;
 }
 
+/* The loading picture's wait (0.297): Level_Load shows a loading picture
+ * (0x10D130 -> 0x10D040: a random ls01..ls83 in the game's language, or the
+ * map's own) and 0x10CC60 waits for it with no limit: it asks the streamer
+ * for the picture (0x1F7AF0), then pumps the streamer (0x1796B0) until the
+ * picture's resource is in the resource table (0x1F2A20 on the keys at
+ * *0x79351C, capacity *0x793510) and ready (+0x2C set, +0x20 0 or 7, or +0x21
+ * 1). A Gaza save hung there for good on a load right after another (game
+ * thread busy in Level_Load, no frames). Retail has every picture, so the
+ * request or the table is what fails; after 15 s without the picture the wait
+ * gives up (no picture is what the loop shows meanwhile) and says what it saw.
+ * Called each time round with the resource found (or 0). */
+int recomp_loadscreen_wait(uint32_t entry)
+{
+    static ULONGLONG first, last;
+    static uint32_t hash, logged;
+    const ULONGLONG now = GetTickCount64();
+    const uint32_t want = guest_u32(0x365D48u);
+    if (want != hash || now - last > 2000u)
+        first = now;
+    hash = want;
+    last = now;
+    if (now - first < 15000u)
+        return 0;
+    first = now;
+    if (logged < 8u) {
+        const uint32_t cap = guest_u32(0x793510u), keys = guest_u32(0x79351Cu);
+        uint32_t used = 0, i;
+        logged++;
+        if (cap && cap <= 0x100000u && recomp_guard_guest_span(keys, 4u * cap))
+            for (i = 0; i < cap; i++)
+                used += guest_u32(keys + 4u * i) != 0u;
+        if (entry && recomp_guard_guest_span(entry, 0x30u))
+            fprintf(stderr, "[LOADSCREEN-WAIT] picture %08X not ready after 15 s (resource %08X: state %u, %u, use %u); "
+                    "loading on without it; resource table %u of %u used\n", want, entry,
+                    (unsigned)*(volatile uint8_t *)guest_ptr(entry + 0x20u),
+                    (unsigned)*(volatile uint8_t *)guest_ptr(entry + 0x21u),
+                    (unsigned)*(volatile uint16_t *)guest_ptr(entry + 0x2Cu), used, cap);
+        else
+            fprintf(stderr, "[LOADSCREEN-WAIT] picture %08X not in the resource table after 15 s; loading on without it; "
+                    "resource table %u of %u used\n", want, used, cap);
+        fflush(stderr);
+    }
+    return 1;
+}
+
 #define RECOMP_STRIKE_REACT_M 100.0f
 uint32_t g_recomp_strike_obj;
 int recomp_strike_far(uint32_t human)
