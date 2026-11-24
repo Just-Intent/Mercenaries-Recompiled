@@ -20008,6 +20008,325 @@ int recomp_cdbody_walk_capped(uint32_t at, uint32_t node)
     return 1;
 }
 
+/* Scribble memory past 16 KB (0.294). Every script value the game keeps
+ * (Utility_Write*ToScribbleMemory; numbers too, as "%f" text) lives in one
+ * text pool at g_ScribbleMemory (0x414150): entries {name hash, text, NUL}
+ * end to end from +0x3008 to +0x300C, a 0x7FF-slot hash table of 16-bit
+ * offsets at +6/+0x1008. Retail allocates 16 KB (0x121AD0) and a write past
+ * it isn't checked (0x121C20 appends, running into the heap); a save keeps
+ * exactly 16 KB of it (0x1219B0, into the save at +0x84C: used, capacity,
+ * count, then the text), so whatever was written last (a rewrite moves the
+ * entry to the end) was lost on loading once a mod's values passed 16 KB.
+ * Gaza's saves came back on SW with its moods and Deck states gone.
+ * Now the pool is 64 KB (offsets stay 16-bit), a write that won't fit is
+ * refused and logged instead of overrunning, and a save holding more than
+ * 16 KB packs the text into the save's 16 KB (LZ77, checked by unpacking
+ * before it's kept; 'MFCZ' in the capacity word). Saves under 16 KB are
+ * written as retail writes them. A save that can't be packed keeps the
+ * whole entries that fit, as does an older save made past 16 KB (which
+ * retail loads with garbage past its end). */
+#define RECOMP_SCRIB_SAVED 0x4000u
+#define RECOMP_SCRIB_POOL 0x10000u
+#define RECOMP_SCRIB_PACKED 0x5A43464Du
+uint32_t g_recomp_scribble_pool;            /* bytes allocated (0x121AD0's patch) */
+
+static void recomp_scrib_put(uint32_t xbox_va, uint32_t v)
+{
+    *(volatile uint32_t *)guest_ptr(xbox_va) = v;
+}
+
+static uint32_t recomp_scrib_limit(void)
+{
+    return g_recomp_scribble_pool ? g_recomp_scribble_pool - 16u : RECOMP_SCRIB_SAVED;
+}
+
+static int recomp_scrib_emit(uint8_t *dst, uint32_t *op, uint32_t cap, const uint8_t *lit, uint32_t nlit,
+                             uint32_t off, uint32_t mlen)
+{
+    uint32_t o = *op, ml = mlen ? mlen - 4u : 0u, r;
+    if (o >= cap)
+        return 0;
+    dst[o++] = (uint8_t)(((nlit < 15u ? nlit : 15u) << 4) | (ml < 15u ? ml : 15u));
+    if (nlit >= 15u) {
+        for (r = nlit - 15u;; r -= 255u) {
+            if (o >= cap)
+                return 0;
+            if (r < 255u) { dst[o++] = (uint8_t)r; break; }
+            dst[o++] = 255u;
+        }
+    }
+    if (nlit > cap - o)
+        return 0;
+    memcpy(dst + o, lit, nlit);
+    o += nlit;
+    if (mlen) {
+        if (cap - o < 2u)
+            return 0;
+        dst[o++] = (uint8_t)off;
+        dst[o++] = (uint8_t)(off >> 8);
+        if (ml >= 15u) {
+            for (r = ml - 15u;; r -= 255u) {
+                if (o >= cap)
+                    return 0;
+                if (r < 255u) { dst[o++] = (uint8_t)r; break; }
+                dst[o++] = 255u;
+            }
+        }
+    }
+    *op = o;
+    return 1;
+}
+
+/* LZ77: a token (literal count << 4 | match length - 4, 15 = more bytes
+ * follow, each 255 = more again), the literals, then a 16-bit offset back;
+ * the last token has literals only. 0 if it doesn't fit in cap. */
+static uint32_t recomp_scrib_pack(const uint8_t *src, uint32_t n, uint8_t *dst, uint32_t cap)
+{
+    static uint32_t table[4096];               /* position + 1 */
+    uint32_t ip = 0, anchor = 0, op = 0;
+    memset(table, 0, sizeof(table));
+    while (n >= 4u && ip <= n - 4u) {
+        uint32_t seq, h, cand;
+        memcpy(&seq, src + ip, 4);
+        h = (seq * 2654435761u) >> 20;
+        cand = table[h];
+        table[h] = ip + 1u;
+        if (cand && ip - (cand - 1u) <= 0xFFFFu && memcmp(src + cand - 1u, src + ip, 4) == 0) {
+            uint32_t ref = cand - 1u, len = 4u;
+            while (ip + len < n && src[ref + len] == src[ip + len])
+                len++;
+            if (!recomp_scrib_emit(dst, &op, cap, src + anchor, ip - anchor, ip - ref, len))
+                return 0;
+            ip += len;
+            anchor = ip;
+            continue;
+        }
+        ip++;
+    }
+    if (!recomp_scrib_emit(dst, &op, cap, src + anchor, n - anchor, 0, 0))
+        return 0;
+    return op;
+}
+
+/* The bytes written to dst, or 0 for a stream that's broken or too big. */
+static uint32_t recomp_scrib_unpack(const uint8_t *src, uint32_t n, uint8_t *dst, uint32_t cap)
+{
+    uint32_t ip = 0, op = 0;
+    while (ip < n) {
+        uint32_t t = src[ip++], lit = t >> 4, ml = t & 15u, off, i;
+        if (lit == 15u) {
+            uint8_t b;
+            do {
+                if (ip >= n)
+                    return 0;
+                b = src[ip++];
+                lit += b;
+            } while (b == 255u);
+        }
+        if (lit > n - ip || lit > cap - op)
+            return 0;
+        memcpy(dst + op, src + ip, lit);
+        ip += lit;
+        op += lit;
+        if (ip >= n)
+            break;
+        if (n - ip < 2u)
+            return 0;
+        off = (uint32_t)src[ip] | ((uint32_t)src[ip + 1] << 8);
+        ip += 2u;
+        if (ml == 15u) {
+            uint8_t b;
+            do {
+                if (ip >= n)
+                    return 0;
+                b = src[ip++];
+                ml += b;
+            } while (b == 255u);
+        }
+        ml += 4u;
+        if (!off || off > op || ml > cap - op)
+            return 0;
+        for (i = 0; i < ml; i++, op++)
+            dst[op] = dst[op - off];
+    }
+    return op;
+}
+
+/* The length of the whole entries (hash, text, NUL) within limit. */
+static uint32_t recomp_scrib_whole(const uint8_t *text, uint32_t used, uint32_t limit, uint32_t *count)
+{
+    uint32_t p = 0, k = 0;
+    while (p + 4u < used) {
+        uint32_t q = p + 4u;
+        while (q < used && text[q])
+            q++;
+        q++;
+        if (q > limit || q > used)
+            break;
+        p = q;
+        k++;
+    }
+    if (count)
+        *count = k;
+    return p;
+}
+
+/* 0x121C20's append (Utility_Write*ToScribbleMemory): nonzero refuses the
+ * write (the key is erased instead, as by a nil value) when the pool hasn't
+ * room for it, or when it's a new key and the hash table (0x7FF slots, its
+ * count at +0) is nearly full: retail's insert (0x1F2A60) probes for a free
+ * slot without end. */
+int recomp_scribble_full(uint32_t self, uint32_t hash, uint32_t text, uint32_t existed)
+{
+    static unsigned logged;
+    const uint32_t base = guest_u32(self + 0x3008u), end = guest_u32(self + 0x300Cu);
+    const uint32_t len = (uint32_t)strlen((const char *)guest_ptr(text));
+    const uint32_t limit = recomp_scrib_limit(), keys = guest_u32(self);
+    if (end - base + 4u + len + 1u <= limit && (existed || keys < 0x7F0u))
+        return 0;
+    if (logged < 8u) {
+        logged++;
+        fprintf(stderr, "[SCRIBBLE-FULL] script value %08X (%u characters) not kept: %u of %u bytes, %u keys in use\n",
+                hash, len, end - base, limit, keys);
+    }
+    return 1;
+}
+
+/* The entries split in two: their name hashes (4 bytes each, which don't
+ * pack) and their texts with NULs, end to end. Entry count, or -1 for text
+ * that isn't whole entries. */
+static int recomp_scrib_split(const uint8_t *text, uint32_t used, uint8_t *hashes, uint32_t hcap,
+                              uint8_t *texts, uint32_t *tlen)
+{
+    uint32_t p = 0, k = 0, t = 0;
+    while (p < used) {
+        uint32_t q = p + 4u;
+        if (q >= used || (k + 1u) * 4u > hcap)
+            return -1;
+        while (q < used && text[q])
+            q++;
+        if (q >= used)
+            return -1;
+        memcpy(hashes + k * 4u, text + p, 4);
+        memcpy(texts + t, text + p + 4u, q + 1u - (p + 4u));
+        t += q + 1u - (p + 4u);
+        p = q + 1u;
+        k++;
+    }
+    *tlen = t;
+    return (int)k;
+}
+
+/* Back together: k entries into out (cap bytes); the length, or 0. */
+static uint32_t recomp_scrib_join(const uint8_t *hashes, uint32_t k, const uint8_t *texts, uint32_t tlen,
+                                  uint8_t *out, uint32_t cap)
+{
+    uint32_t i, p = 0, o = 0;
+    for (i = 0; i < k; i++) {
+        uint32_t q = p;
+        while (q < tlen && texts[q])
+            q++;
+        if (q >= tlen || cap - o < 4u + q + 1u - p)
+            return 0;
+        memcpy(out + o, hashes + i * 4u, 4);
+        memcpy(out + o + 4u, texts + p, q + 1u - p);
+        o += 4u + q + 1u - p;
+        p = q + 1u;
+    }
+    return p == tlen ? o : 0u;
+}
+
+/* 0x1219B0: the pool into a save (dest: used, capacity, count, 16 KB).
+ * Packed: lz length, entry count, the hashes, the texts packed. */
+void recomp_scribble_save(uint32_t self, uint32_t dest)
+{
+    static uint8_t packed[RECOMP_SCRIB_SAVED], texts[RECOMP_SCRIB_POOL], check[RECOMP_SCRIB_POOL],
+        back[RECOMP_SCRIB_POOL];
+    static unsigned logged;
+    const uint32_t base = guest_u32(self + 0x3008u);
+    const uint8_t *text = (const uint8_t *)guest_ptr(base);
+    uint32_t used = guest_u32(self + 0x300Cu) - base, count = guest_u32(self + 0x3014u), tlen = 0, n = 0;
+    uint8_t *out = (uint8_t *)guest_ptr(dest + 0xCu);
+    int k;
+    if (used <= RECOMP_SCRIB_SAVED) {           /* as retail */
+        memcpy(out, text, RECOMP_SCRIB_SAVED);
+        recomp_scrib_put(dest, used);
+        recomp_scrib_put(dest + 4u, RECOMP_SCRIB_SAVED);
+        recomp_scrib_put(dest + 8u, count);
+        return;
+    }
+    k = used <= sizeof(texts) ? recomp_scrib_split(text, used, packed + 8, RECOMP_SCRIB_SAVED - 8u, texts, &tlen) : -1;
+    if (k > 0) {
+        const uint32_t h = 8u + (uint32_t)k * 4u;
+        n = recomp_scrib_pack(texts, tlen, packed + h, RECOMP_SCRIB_SAVED - h);
+        if (n && recomp_scrib_unpack(packed + h, n, check, sizeof(check)) == tlen &&
+            recomp_scrib_join(packed + 8, (uint32_t)k, check, tlen, back, sizeof(back)) == used &&
+            !memcmp(back, text, used)) {
+            const uint32_t kk = (uint32_t)k;
+            memcpy(packed, &n, 4);
+            memcpy(packed + 4, &kk, 4);
+            memset(out, 0, RECOMP_SCRIB_SAVED);
+            memcpy(out, packed, h + n);
+            recomp_scrib_put(dest, used);
+            recomp_scrib_put(dest + 4u, RECOMP_SCRIB_PACKED);
+            recomp_scrib_put(dest + 8u, count);
+            if (logged < 4u) {
+                logged++;
+                fprintf(stderr, "[SCRIBBLE] save: %u bytes of script values (%d) packed into %u of 16384\n", used,
+                        k, h + n);
+            }
+            return;
+        }
+    }
+    used = recomp_scrib_whole(text, used, RECOMP_SCRIB_SAVED, &count);
+    memset(out, 0, RECOMP_SCRIB_SAVED);
+    memcpy(out, text, used);
+    recomp_scrib_put(dest, used);
+    recomp_scrib_put(dest + 4u, RECOMP_SCRIB_SAVED);
+    recomp_scrib_put(dest + 8u, count);
+    fprintf(stderr, "[SCRIBBLE-LOST] save: script values didn't pack into 16 KB; kept the first %u bytes (%u)\n",
+            used, count);
+}
+
+/* 0x121B00 (a save's values back): the text and its end; the caller then
+ * sets the count and rebuilds the hash table from the entries. */
+void recomp_scribble_load(uint32_t self, uint32_t src)
+{
+    static uint8_t texts[RECOMP_SCRIB_POOL];
+    const uint32_t base = guest_u32(self + 0x3008u);
+    uint8_t *text = (uint8_t *)guest_ptr(base);
+    const uint8_t *in = (const uint8_t *)guest_ptr(src + 0xCu);
+    const uint32_t pool = g_recomp_scribble_pool ? g_recomp_scribble_pool : RECOMP_SCRIB_SAVED;
+    uint32_t used = guest_u32(src), count = 0;
+    if (guest_u32(src + 4u) == RECOMP_SCRIB_PACKED) {
+        uint32_t n, k, h, tlen = 0;
+        memcpy(&n, in, 4);
+        memcpy(&k, in + 4, 4);
+        h = k <= 0x800u ? 8u + k * 4u : RECOMP_SCRIB_SAVED;
+        if (!(h <= RECOMP_SCRIB_SAVED && n <= RECOMP_SCRIB_SAVED - h && used <= recomp_scrib_limit() &&
+              (tlen = recomp_scrib_unpack(in + h, n, texts, sizeof(texts))) != 0 &&
+              recomp_scrib_join(in + 8, k, texts, tlen, text, pool) == used)) {
+            fprintf(stderr, "[SCRIBBLE-LOST] load: a packed save's script values didn't unpack (%u bytes); none kept\n",
+                    used);
+            used = 0;
+            recomp_scrib_put(src + 8u, 0);
+        }
+        recomp_scrib_put(self + 0x300Cu, base + used);
+        recomp_scrib_put(self + 0x3010u, pool);
+        return;
+    }
+    memcpy(text, in, RECOMP_SCRIB_SAVED);
+    if (used > RECOMP_SCRIB_SAVED) {
+        const uint32_t was = used;
+        used = recomp_scrib_whole(text, RECOMP_SCRIB_SAVED, RECOMP_SCRIB_SAVED, &count);
+        recomp_scrib_put(src + 8u, count);
+        fprintf(stderr, "[SCRIBBLE-LOST] load: a save made with %u bytes of script values held 16 KB; kept %u (%u)\n",
+                was, used, count);
+    }
+    recomp_scrib_put(self + 0x300Cu, base + used);
+    recomp_scrib_put(self + 0x3010u, pool);
+}
+
 #define RECOMP_STRIKE_REACT_M 100.0f
 uint32_t g_recomp_strike_obj;
 int recomp_strike_far(uint32_t human)
