@@ -89,14 +89,12 @@ struct Hash
         add(&n, sizeof(n));
         add(s.data(), s.size() * sizeof(wchar_t));
     }
-    void file(const fs::path &p)
+    void content(const fs::path &p)
     {
         std::ifstream f(p, std::ios::binary);
         if (!f)
             fail("Cannot read a mod or game file.");
-        uint64_t n = fs::file_size(p);
-        add(&n, sizeof(n));
-        std::array<char, 65536> buf;
+        std::vector<char> buf(1 << 20);
         while (f)
         {
             f.read(buf.data(), buf.size());
@@ -105,17 +103,120 @@ struct Hash
         if (!f.eof())
             fail("Error reading a mod or game file.");
     }
+    // A file's size and its content's SHA-256 (from the digest store while the
+    // file's size and write time are unchanged: the 2.4 GB of retail files
+    // were read and hashed on every modded launch).
+    void file(const fs::path &p);
+    void raw(unsigned char digest[32])
+    {
+        if (BCryptFinishHash(value, digest, 32, 0) < 0)
+            fail("Cannot finish mod fingerprint.");
+    }
     std::wstring finish()
     {
         unsigned char digest[32];
-        if (BCryptFinishHash(value, digest, 32, 0) < 0)
-            fail("Cannot finish mod fingerprint.");
+        raw(digest);
         std::wostringstream s;
         for (auto c : digest)
             s << std::hex << std::setfill(L'0') << std::setw(2) << (unsigned)c;
         return s.str();
     }
 };
+// File digests kept between launches (mod-cache\file-digests.bin): path,
+// size, write time and SHA-256. A file whose size or write time changed is
+// read and hashed again.
+struct FileDigests
+{
+    struct Entry
+    {
+        uint64_t size = 0;
+        int64_t time = 0;
+        std::array<unsigned char, 32> digest{};
+    };
+    fs::path store;
+    std::map<std::wstring, Entry> entries;
+    bool dirty = false;
+    void load(const fs::path &p)
+    {
+        store = p;
+        std::ifstream f(p, std::ios::binary);
+        uint32_t magic = 0, count = 0;
+        if (!f.read((char *)&magic, 4) || magic != 0x31474944 || !f.read((char *)&count, 4))
+            return;
+        for (uint32_t i = 0; i < count; i++)
+        {
+            uint32_t n = 0;
+            if (!f.read((char *)&n, 4) || n > 4096)
+                break;
+            std::wstring key(n, L'\0');
+            Entry e;
+            if (!f.read((char *)key.data(), n * sizeof(wchar_t)) || !f.read((char *)&e.size, 8) ||
+                !f.read((char *)&e.time, 8) || !f.read((char *)e.digest.data(), 32))
+                break;
+            entries[key] = e;
+        }
+    }
+    void save()
+    {
+        if (!dirty || store.empty())
+            return;
+        auto tmp = store;
+        tmp += L".tmp";
+        {
+            std::ofstream f(tmp, std::ios::binary | std::ios::trunc);
+            uint32_t magic = 0x31474944, count = (uint32_t)entries.size();
+            f.write((char *)&magic, 4);
+            f.write((char *)&count, 4);
+            for (auto &e : entries)
+            {
+                uint32_t n = (uint32_t)e.first.size();
+                f.write((char *)&n, 4);
+                f.write((char *)e.first.data(), n * sizeof(wchar_t));
+                f.write((char *)&e.second.size, 8);
+                f.write((char *)&e.second.time, 8);
+                f.write((char *)e.second.digest.data(), 32);
+            }
+            if (!f)
+                return;
+        }
+        std::error_code ec;
+        fs::rename(tmp, store, ec);
+        if (!ec)
+            dirty = false;
+    }
+};
+FileDigests *g_digests = nullptr;
+void Hash::file(const fs::path &p)
+{
+    std::error_code ec;
+    uint64_t n = fs::file_size(p, ec);
+    if (ec)
+        fail("Cannot read a mod or game file.");
+    add(&n, sizeof(n));
+    int64_t time = fs::last_write_time(p, ec).time_since_epoch().count();
+    std::wstring key = lower(fs::absolute(p).wstring());
+    if (g_digests && !ec)
+    {
+        auto it = g_digests->entries.find(key);
+        if (it != g_digests->entries.end() && it->second.size == n && it->second.time == time)
+        {
+            add(it->second.digest.data(), 32);
+            return;
+        }
+    }
+    Hash h;
+    h.content(p);
+    FileDigests::Entry e;
+    e.size = n;
+    e.time = time;
+    h.raw(e.digest.data());
+    add(e.digest.data(), 32);
+    if (g_digests && !ec)
+    {
+        g_digests->entries[key] = e;
+        g_digests->dirty = true;
+    }
+}
 struct Record
 {
     uint32_t size, key, kind;
@@ -536,10 +637,19 @@ Launch prepare(const fs::path &installation, const fs::path &game, const Selecti
     }
     Files retail = files(game), merged = retail, host, plugin_files;
     std::map<std::wstring, std::vector<fs::path>> archives;
+    FileDigests digests;
+    fs::create_directories(installation / L"mod-cache");
+    digests.load(installation / L"mod-cache" / L"file-digests.bin");
+    g_digests = &digests;
+    struct Forget
+    {
+        ~Forget() { g_digests = nullptr; }
+    } forget;
     Hash settings_identity;
     settings_identity.name(L"native-settings-v1");
     Hash fingerprint;
-    fingerprint.name(L"mercenaries-mod-overlay-v7-plugins1-flat-dsk");
+    // v8: each file as its size and its content's SHA-256 (digests kept between launches)
+    fingerprint.name(L"mercenaries-mod-overlay-v8-plugins1-flat-dsk");
     fingerprint.name(fs::absolute(game).wstring());
     fingerprint.file(launch.executable);
     Files runtime_inputs;
@@ -627,6 +737,7 @@ Launch prepare(const fs::path &installation, const fs::path &game, const Selecti
             if (native_mod) settings_identity.name(m.name);
         }
     auto settings_key = settings_identity.finish();
+    digests.save();
     auto cache = installation / L"mod-cache" / fingerprint.finish();
     bounded(cache / L"namespace");
     retire_profiles(installation, cache);
