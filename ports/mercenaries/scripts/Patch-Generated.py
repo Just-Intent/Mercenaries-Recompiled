@@ -15160,6 +15160,15 @@ PATCHES += (
     GeneratedPatch("No fines switch at 000572BD",
         "loc_000572BD: ;\n    recomp_xmm_loadss(xmm0v, edi + 0xAC4); /* movss */\n    xmm0 = xmm0 - MEMF(0x2DC3DC); /* subss */",
         "loc_000572BD: ;\n    if (MEM8(0x87BF00u)) goto loc_000572DA;   /* foundry: no fine on a map that turns them off (Foundry_MapFines) */\n    recomp_xmm_loadss(xmm0v, edi + 0xAC4); /* movss */\n    xmm0 = xmm0 - MEMF(0x2DC3DC); /* subss */"),
+    # The economy event for a death the player caused (0x14BC0): an allied
+    # casualty, then a civilian's ("Collateral Damage", the player's growing
+    # amount at +0xE48, interface.economyevent.collateraldamage) or the
+    # press's ("presscasualty", 100,000 to 1,000,000), else the victim's
+    # bounty. With the same switch neither of the two fines is charged or
+    # shown; allied casualties and bounties stay.
+    GeneratedPatch("No fines switch at 00014D5D",
+        "loc_00014D5D: ;\n    eax = MEM32(esp + 0x14);\n    if (TEST_Z(eax, eax)) goto loc_00014DEE; /* je: equal / zero */",
+        "loc_00014D5D: ;\n    if (MEM8(0x87BF00u) && (MEM32(esp + 0x14) || MEM32(esp + 0x1C))) goto loc_00014EC9;   /* foundry: no collateral or press fine (Foundry_MapFines) */\n    eax = MEM32(esp + 0x14);\n    if (TEST_Z(eax, eax)) goto loc_00014DEE; /* je: equal / zero */"),
 )
 
 
