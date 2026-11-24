@@ -20412,6 +20412,46 @@ int recomp_loadscreen_wait(uint32_t entry)
     return 1;
 }
 
+/* A small allocation that failed with the main heap half empty (0.300).
+ * Gaza's runs hung out of memory on their sixth level load, making a layer's
+ * objects: the actor pool (0x31BDF8) asked for a 0x200-byte block (0x3A370 ->
+ * 0x1F71E0 -> 0x1F7070), and 0x1F7070 retries for ever, running the
+ * out-of-memory handlers, while the main heap had 19.7 MB free in one piece.
+ * Small sizes come from bins first (0x1F6F70: bins of 32 bytes at 0x643928,
+ * +08 free list, +0C block size, +14 free count; count at 0x64592C, at most
+ * 256, each a 0x2000-byte page), and only once all 256 exist from the main
+ * heap (0x1F6D80 on 0x645984); a bin's pop (0x1F66C0) gives 0 when its list is
+ * empty, whatever its count says. So a bin that counts free blocks it doesn't
+ * have fails the allocation for good. Called on the first failure: says what
+ * the bins look like (the first 4 times), and the caller then tries the main
+ * heap, as retail does when the bins run out. */
+int recomp_small_alloc_failed(uint32_t size)
+{
+    static unsigned logged;
+    const uint32_t bins = guest_u32(0x64592Cu), classes = guest_u32(0x645928u);
+    uint32_t i, odd = 0, same = 0, free_blocks = 0;
+    if (logged >= 4u)
+        return 1;
+    logged++;
+    for (i = 0; i < bins && i < 0x100u; i++) {
+        const uint32_t b = 0x643928u + 32u * i;
+        const uint32_t head = guest_u32(b + 8u), bsize = guest_u32(b + 0x0Cu), n = guest_u32(b + 0x14u);
+        if (bsize < size || (same && bsize != same))
+            continue;
+        if (!same)
+            same = bsize;
+        free_blocks += n;
+        if (n && !head && odd++ < 4u)
+            fprintf(stderr, "[SMALL-ALLOC] bin %u (%u-byte blocks) counts %u free but its list is empty\n", i, bsize, n);
+    }
+    fprintf(stderr, "[SMALL-ALLOC] %u bytes failed (bins on %u, %u of 256 bins, %u classes, up to %u bytes; "
+            "%u free in %u-byte bins, %u bins counting blocks they don't have): trying the main heap\n",
+            size, (unsigned)*(volatile uint8_t *)guest_ptr(0x643920u), bins, classes, guest_u32(0x643924u),
+            free_blocks, same, odd);
+    fflush(stderr);
+    return 1;
+}
+
 #define RECOMP_STRIKE_REACT_M 100.0f
 uint32_t g_recomp_strike_obj;
 int recomp_strike_far(uint32_t human)
