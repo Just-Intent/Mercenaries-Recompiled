@@ -19989,6 +19989,25 @@ int recomp_guard_dsound_level(uint32_t buffer, uint32_t out)
  * away (Gaza's, 150-700 m) made the player duck too. The senders note their
  * strike object here; a human farther than RECOMP_STRIKE_REACT_M from it
  * (world positions at +0x08) doesn't react. */
+/* A collision query's body walk (0x190BC0) along +0xC parents, capped: a
+ * cycle froze the game as a building fell to a ruin with mesh collision
+ * (Gaza, 2026-11-24). Past RECOMP_CDBODY_MAX steps in one call the walk is
+ * cut (the query takes its end as found) and the first few are logged. */
+#define RECOMP_CDBODY_MAX 4096u
+uint32_t g_recomp_cdbody_steps;
+int recomp_cdbody_walk_capped(uint32_t at, uint32_t node)
+{
+    static unsigned logged;
+    if (++g_recomp_cdbody_steps < RECOMP_CDBODY_MAX)
+        return 0;
+    if (logged < 8u) {
+        logged++;
+        fprintf(stderr, "[CDBODY-LOOP] 0x%08X: a body chain past %u steps at %08X; walk cut (a cycle)\n",
+                at, RECOMP_CDBODY_MAX, node);
+    }
+    return 1;
+}
+
 #define RECOMP_STRIKE_REACT_M 100.0f
 uint32_t g_recomp_strike_obj;
 int recomp_strike_far(uint32_t human)

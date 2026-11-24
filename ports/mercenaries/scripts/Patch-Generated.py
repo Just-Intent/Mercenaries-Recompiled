@@ -15166,6 +15166,20 @@ PATCHES += (
     # press's ("presscasualty", 100,000 to 1,000,000), else the victim's
     # bounty. With the same switch neither of the two fines is charged or
     # shown; allied casualties and bounties stay.
+    # A collision query's body walk (0x190BC0: hkCdBody-like records, +0xC
+    # their parent) has two loops along +0xC with no end but a null; a cycle
+    # froze Gaza as a mosque fell to a ruin with mesh collision (hangsnap
+    # 2026-11-24 07:36, under RsHavokObstacleManager 0x12E8C0/0x12D160). Each
+    # walk is capped (recomp_cdbody_walk_capped, recomp_manual.c), logged.
+    GeneratedPatch("Body walk cap: reset at 00190BC0",
+        "loc_00190BC0: ;\n    PUSH32(esp, ecx);\n    edx = MEM32(esp + 0x1C);",
+        "loc_00190BC0: ;\n    { extern uint32_t g_recomp_cdbody_steps; g_recomp_cdbody_steps = 0; }   /* foundry: body walk cap */\n    PUSH32(esp, ecx);\n    edx = MEM32(esp + 0x1C);"),
+    GeneratedPatch("Body walk cap: to the root at 00190BF0",
+        "loc_00190BF0: ;\n    ecx = eax;\n    eax = MEM32(ecx + 0xC);\n    if (TEST_NZ(eax, eax)) goto loc_00190BF0; /* jne: not equal / not zero */",
+        "loc_00190BF0: ;\n    ecx = eax;\n    eax = MEM32(ecx + 0xC);\n    if (TEST_NZ(eax, eax)) { int recomp_cdbody_walk_capped(uint32_t, uint32_t); if (!recomp_cdbody_walk_capped(0x190BF0u, ecx)) goto loc_00190BF0; }   /* foundry: capped */"),
+    GeneratedPatch("Body walk cap: the parents at 00190C1E",
+        "loc_00190C1E: ;\n    esi = MEM32(esi + 0xC);\n    if (TEST_NZ(esi, esi)) goto loc_00190C06; /* jne: not equal / not zero */",
+        "loc_00190C1E: ;\n    esi = MEM32(esi + 0xC);\n    if (TEST_NZ(esi, esi)) { int recomp_cdbody_walk_capped(uint32_t, uint32_t); if (!recomp_cdbody_walk_capped(0x190C1Eu, esi)) goto loc_00190C06; }   /* foundry: capped */"),
     GeneratedPatch("No fines switch at 00014D5D",
         "loc_00014D5D: ;\n    eax = MEM32(esp + 0x14);\n    if (TEST_Z(eax, eax)) goto loc_00014DEE; /* je: equal / zero */",
         "loc_00014D5D: ;\n    if (MEM8(0x87BF00u) && (MEM32(esp + 0x14) || MEM32(esp + 0x1C))) goto loc_00014EC9;   /* foundry: no collateral or press fine (Foundry_MapFines) */\n    eax = MEM32(esp + 0x14);\n    if (TEST_Z(eax, eax)) goto loc_00014DEE; /* je: equal / zero */"),
