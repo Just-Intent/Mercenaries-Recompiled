@@ -20813,6 +20813,49 @@ void recomp_shop_page(uint32_t shop, uint32_t page, uint32_t has_items)
  * are any, +0x18 the low mark). A page is never given back to the main heap
  * (0x1F6A60 isn't called). Replaces 0x1F6BC0 (a bin's set-up), 0x1F66C0
  * (take a block) and 0x1F6AB0 (give one back). */
+/* developer.ini [Developer], beside the exe or in MERCENARIES_CONFIG_ROOT */
+static void recomp_dev_ini_path(char *path, size_t size)
+{
+    char root[MAX_PATH];
+    path[0] = 0;
+    DWORD length = GetEnvironmentVariableA("MERCENARIES_CONFIG_ROOT", root, MAX_PATH);
+    if (length && length + sizeof("\\developer.ini") <= MAX_PATH) { snprintf(path, size, "%s\\developer.ini", root); return; }
+    DWORD n = GetModuleFileNameA(NULL, path, (DWORD)size);
+    char *slash = n && n < size ? strrchr(path, '\\') : NULL;
+    if (!slash) { path[0] = 0; return; }
+    slash[1] = 0;
+    if (strcat_s(path, size, "developer.ini")) path[0] = 0;
+}
+
+int recomp_dev_ini_int(const char *key, int fallback)
+{
+    char path[MAX_PATH];
+    recomp_dev_ini_path(path, sizeof(path));
+    return path[0] ? (int)GetPrivateProfileIntA("Developer", key, fallback, path) : fallback;
+}
+
+/* 0.319: developer.ini small_blocks=retail puts retail's allocator back (to
+ * tell a fault of the port's from the game's), small_block_wait=N (0-64,
+ * default 64) how many freed blocks wait before reuse; read once, at the
+ * first bin's set-up, before any block is handed out. */
+static int g_sb_mode = -1;                 /* -1 not read, 0 retail, 1 the port's */
+static uint32_t g_sb_wait = 64u;
+int recomp_sb_on(void)
+{
+    if (g_sb_mode < 0) {
+        char path[MAX_PATH], text[32] = "";
+        recomp_dev_ini_path(path, sizeof(path));
+        if (path[0]) GetPrivateProfileStringA("Developer", "small_blocks", "", text, sizeof(text), path);
+        g_sb_mode = _stricmp(text, "retail") != 0;
+        int w = recomp_dev_ini_int("small_block_wait", 64);
+        g_sb_wait = w < 0 ? 0u : w > 64 ? 64u : (uint32_t)w;
+        xbox_preview_log_event("guest-guard", "small blocks: %s%s%u%s", g_sb_mode ? "the port's allocator" : "retail's allocator (developer.ini)",
+                               g_sb_mode ? ", " : "", g_sb_mode ? g_sb_wait : 0u, g_sb_mode ? " freed blocks wait before reuse" : "");
+        if (!g_sb_mode) xbox_preview_log_event("guest-guard", "small blocks: (retail's chain checks of 0.313-0.316 apply)");
+    }
+    return g_sb_mode;
+}
+
 enum { SB_USED = 0, SB_FREE = 1, SB_WAITING = 2 };
 typedef struct {
     uint32_t start, size, n, top, qcap, qat, qn;
@@ -20860,7 +20903,7 @@ void recomp_sb_init(uint32_t bin, uint32_t start, uint32_t bytes, uint32_t size)
         free(e->state); free(e->stack); free(e->queue); free(e->snap);
         e->state = (uint8_t *)malloc(n);
         e->stack = (uint32_t *)malloc(4u * n);
-        e->qcap = n >= 8u ? (n / 4u < 64u ? n / 4u : 64u) : 0u;
+        e->qcap = n >= 8u ? (n / 4u < g_sb_wait ? n / 4u : g_sb_wait) : 0u;
         e->queue = e->qcap ? (uint32_t *)malloc(4u * e->qcap) : NULL;
         e->snap = e->qcap ? (uint32_t (*)[8])malloc(32u * e->qcap) : NULL;
         if (!e->state || !e->stack || (e->qcap && (!e->queue || !e->snap))) {

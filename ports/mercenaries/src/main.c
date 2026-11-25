@@ -1686,6 +1686,37 @@ static LONG CALLBACK veh_handler(PEXCEPTION_POINTERS ep)
         xbox_preview_log_crash(ep->ExceptionRecord->ExceptionCode,
             (uintptr_t)ep->ContextRecord->Rip,g_recomp_current_func,
             g_eax,g_ecx,g_edx,g_esp);
+        {   /* foundry 0.319: what the record left out, into the crash log */
+            static char more[4096];
+            int used = snprintf(more, sizeof(more),
+                "%s guest %08X; ebx=%08X esi=%08X edi=%08X ebp=%08X\n",
+                ep->ExceptionRecord->ExceptionInformation[0] ? "write to" : "read of",
+                fault_xbox_va, g_ebx, g_esi, g_edi, g_seh_ebp);
+            if (g_esp >= 0x00010000u && g_esp <= 0x03FFFF00u && used > 0 && used < (int)sizeof(more)) {
+                const uint32_t *st = (const uint32_t *)((uintptr_t)g_xbox_mem_offset + g_esp);
+                used += snprintf(more + used, sizeof(more) - used, "guest stack:");
+                for (int i = 0; i < 32 && used > 0 && used < (int)sizeof(more) - 10; ++i)
+                    used += snprintf(more + used, sizeof(more) - used, " %08X", st[i]);
+                if (used < (int)sizeof(more) - 1) more[used++] = '\n', more[used] = 0;
+            }
+            if (g_recomp_recent_game_func_idx && used > 0 && used < (int)sizeof(more) - 20) {
+                const uint32_t end = g_recomp_recent_game_func_idx, count = end < 64u ? end : 64u;
+                used += snprintf(more + used, sizeof(more) - used, "game functions, last first:");
+                for (uint32_t i = 0; i < count && used > 0 && used < (int)sizeof(more) - 10; ++i)
+                    used += snprintf(more + used, sizeof(more) - used, " %08X",
+                                     g_recomp_recent_game_funcs[(end - 1u - i) & 255u]);
+                if (used < (int)sizeof(more) - 1) more[used++] = '\n', more[used] = 0;
+            }
+            if (g_recomp_recent_func_idx && used > 0 && used < (int)sizeof(more) - 20) {
+                const uint32_t end = g_recomp_recent_func_idx, count = end < 64u ? end : 64u;
+                used += snprintf(more + used, sizeof(more) - used, "all functions, last first:");
+                for (uint32_t i = 0; i < count && used > 0 && used < (int)sizeof(more) - 10; ++i)
+                    used += snprintf(more + used, sizeof(more) - used, " %08X",
+                                     g_recomp_recent_funcs[(end - 1u - i) & 63u]);
+                if (used < (int)sizeof(more) - 1) more[used++] = '\n', more[used] = 0;
+            }
+            xbox_preview_log_crash_text(more);
+        }
         capture_crash_guest_memory();
         fprintf(stderr, "  Xbox regs: eax=0x%08X ecx=0x%08X edx=0x%08X esp=0x%08X\n",
             g_eax, g_ecx, g_edx, g_esp);
@@ -2182,6 +2213,11 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance,
         getenv("MERCENARIES_TRACE_RECOMP_ENTRIES") != NULL ||
         getenv("MERCENARIES_TRACK_RECOMP_ENTRIES") != NULL ||
         getenv("MERCENARIES_TRACE_PARTICLE_LIST") != NULL;
+    {   /* foundry 0.319: developer.ini [Developer] trace_calls=1 keeps the
+         * last functions run, for the crash log */
+        int recomp_dev_ini_int(const char *, int);
+        if (recomp_dev_ini_int("trace_calls", 0) == 1) g_recomp_entry_trace_enabled = 1u;
+    }
     g_recomp_irq_entry_safepoint_enabled =
         getenv("MERCENARIES_DISABLE_IRQ_ENTRY_SAFEPOINT") == NULL;
     g_recomp_particle_list_watch_enabled =

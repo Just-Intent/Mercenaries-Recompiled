@@ -230,6 +230,14 @@ void xbox_preview_log_crash(uint32_t code,uintptr_t pc,uint32_t guest_pc,
         FlushFileBuffers(crash_file);
     }
 }
+/* More of a crash, after its record (foundry 0.319): registers, the guest
+ * stack, the functions that ran last. No allocation; one write. */
+void xbox_preview_log_crash_text(const char *text) {
+    size_t n=0;
+    if(crash_file==INVALID_HANDLE_VALUE || !text) return;
+    while(text[n]) ++n;
+    if(n) {write_bytes(crash_file,text,(DWORD)n);FlushFileBuffers(crash_file);}
+}
 void xbox_preview_log_shutdown(void) {
     if(!worker) return;
     xbox_preview_log_event("session","clean shutdown");
