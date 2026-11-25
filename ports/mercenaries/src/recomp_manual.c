@@ -20074,7 +20074,8 @@ static void recomp_dwatch_start(void)
                            g_dwatch_guest[0], g_dwatch_pointers ? " (pointers too)" : "");
 }
 
-void recomp_dwatch_start_boot(void) { recomp_dwatch_start(); }
+void recomp_d3d_sampler_start(void);
+void recomp_dwatch_start_boot(void) { recomp_dwatch_start(); recomp_d3d_sampler_start(); }
 
 static void recomp_watch_arm(void);
 static void recomp_watch_write_table(const uint32_t *words);
@@ -20862,6 +20863,63 @@ void recomp_d3d_device_check(uint32_t dev)
     }
     memcpy(g_d3d_dev_prev, (const void *)guest_ptr(dev), D3D_DEV_BYTES);
     g_d3d_dev_have = 1;
+}
+
+/* D3D's device watched by a thread, every millisecond (0.325). 0.324's
+ * crash read the depth buffer (+0x1A08) as FFFFFFFF in GetDepthStencilSurface
+ * (0x289BD0, from 0x210A20) mid-frame, before the swap's check could put it
+ * back, with no hardware watch hit and no file read on the device: the write
+ * isn't seen by the debug registers. This thread reads the device block
+ * (0x2500 bytes at [0x299378]) each millisecond: a word that becomes
+ * FFFFFFFF is logged with the game thread's guest function then and the
+ * last game functions (trace_calls=1 fills them), and the six pointers the
+ * swap AddRefs (+0x1A04, +0x1A08, +0xF88..+0xF94) are put back at once when
+ * one turns into something that isn't 0 or a guest address. */
+static DWORD WINAPI recomp_d3d_sampler(LPVOID unused)
+{
+    (void)unused;
+    static uint32_t prev[D3D_DEV_BYTES / 4u], cur[D3D_DEV_BYTES / 4u];
+    static const uint32_t slots[6] = {0x1A04u, 0x1A08u, 0xF88u, 0xF8Cu, 0xF90u, 0xF94u};
+    uint32_t have_dev = 0;
+    unsigned logged = 0;
+    for (;;) {
+        Sleep(1);
+        const uint32_t dev = guest_u32(0x299378u);
+        if (dev < 0x00010000u || dev >= 0x04000000u - D3D_DEV_BYTES) { have_dev = 0; continue; }
+        memcpy(cur, (const void *)guest_ptr(dev), D3D_DEV_BYTES);
+        if (have_dev != dev) { memcpy(prev, cur, sizeof(prev)); have_dev = dev; continue; }
+        for (uint32_t i = 0; i < D3D_DEV_BYTES / 4u; i++) {
+            if (cur[i] == prev[i] || cur[i] != 0xFFFFFFFFu || logged >= 32u) continue;
+            logged++;
+            const uint32_t end = g_recomp_recent_game_func_idx;
+            uint32_t r[8];
+            for (unsigned k = 0; k < 8u; k++) r[k] = k < end ? g_recomp_recent_game_funcs[(end - 1u - k) & 255u] : 0u;
+            xbox_preview_log_event("guest-guard",
+                "d3d device watch: +%X became FFFFFFFF (was %08X) within the last ms; the game thread was in guest "
+                "function %08X; last game functions %08X %08X %08X %08X %08X %08X %08X %08X",
+                4u * i, prev[i], (uint32_t)g_recomp_current_func, r[0], r[1], r[2], r[3], r[4], r[5], r[6], r[7]);
+        }
+        for (unsigned k = 0; k < 6u; k++) {
+            const uint32_t i = slots[k] / 4u;
+            if (recomp_d3d_ptr_ok(cur[i]) || !recomp_d3d_ptr_ok(prev[i])) continue;
+            *(volatile uint32_t *)guest_ptr(dev + slots[k]) = prev[i];
+            if (logged < 32u) {
+                logged++;
+                xbox_preview_log_event("guest-guard", "d3d device watch: +%X held %08X; put back %08X", slots[k], cur[i], prev[i]);
+            }
+            cur[i] = prev[i];
+        }
+        memcpy(prev, cur, sizeof(prev));
+    }
+}
+
+void recomp_d3d_sampler_start(void)
+{
+    static LONG started;
+    if (!InterlockedExchange(&started, 1)) {
+        HANDLE t = CreateThread(NULL, 0, recomp_d3d_sampler, NULL, 0, NULL);
+        if (t) CloseHandle(t);
+    }
 }
 
 /* developer.ini [Developer], beside the exe or in MERCENARIES_CONFIG_ROOT */
