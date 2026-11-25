@@ -44,6 +44,13 @@ int merc_plugins_text_key(unsigned message, unsigned key);
 /* Plugin overlays: call fn for each plugin image (render thread, at present). */
 void merc_plugins_each_overlay(void (*fn)(const void *pixels, unsigned width, unsigned height,
                                           unsigned x, unsigned y));
+/* The write guard (0.311): the game's frees (0x1F6AB0 small blocks, 0x1F6970
+ * the main heap) report each block freed; a plugin write into memory it had
+ * written before and that was freed since is refused and logged. Cleared as
+ * each level has loaded (Level_Load returning), when plugins look up their
+ * objects again. */
+void merc_plugins_guest_freed(uint32_t base, uint32_t bytes);
+void merc_plugins_level_loaded(void);
 unsigned merc_plugins_lua_count(void);
 int merc_plugins_lua_command(unsigned index, uint32_t L);
 #ifdef __cplusplus

@@ -58,6 +58,10 @@ typedef struct MercPluginHost {
     const char *settings_directory; /* Absolute persistent folder outside mod-cache. */
     void (MERC_PLUGIN_CALL *log)(void *, const char *);
     int (MERC_PLUGIN_CALL *read_guest)(void *, uint32_t, void *, size_t);
+    /* write_guest returns 0 (and the host logs it) for a write into memory the
+     * plugin wrote before and the game has freed since: a pointer kept from an
+     * object that's gone, or from the last level. Look the object up again
+     * (after each level load the record starts empty). */
     int (MERC_PLUGIN_CALL *write_guest)(void *, uint32_t, const void *, size_t);
     /* Guest calls (appended; check MERC_PLUGIN_HOST_HAS before use). Valid only
      * on the game's own thread: inside on_update (its input checkpoint), a hook

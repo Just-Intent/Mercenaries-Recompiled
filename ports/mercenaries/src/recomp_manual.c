@@ -2927,6 +2927,8 @@ void recomp_foundry_hook_call(unsigned index, uint32_t address, recomp_func_t bo
         g_edx = call.edx;
     } else {
         body();
+        if (address == 0x00184890u)
+            merc_plugins_level_loaded();   /* the write guard: a new level's objects from here */
         call.eax = g_eax;
         call.edx = g_edx;
         call.st0 = g_fp_stack[g_fp_top & 7u];

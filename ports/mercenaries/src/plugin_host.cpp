@@ -6,6 +6,7 @@
 #include <memory>
 #include <deque>
 #include <map>
+#include <iterator>
 #include <mutex>
 #include <vector>
 #include <cstdio>
@@ -86,8 +87,44 @@ int MERC_PLUGIN_CALL read_guest(void *ctx,uint32_t address,void *out,size_t byte
     if(!out||!span(ctx,address,bytes,false)||!accessible(out,bytes,true))return 0;
     memmove(out,static_cast<unsigned char*>(guest)+address,bytes);return 1;
 }
+/* The write guard. A plugin that keeps a pointer into game memory and writes
+ * through it later can hit memory the game freed meanwhile and gave to
+ * something else: Foundry Console's HUD art put back as a level loaded wrote
+ * a texture hash into a new level's actor-pool link, and the next unload
+ * hung (Gaza's level-load stops, 0.310). So every address a plugin writes is
+ * remembered; the game's frees mark the ones inside a freed block stale; a
+ * later write touching a stale one is refused and logged (the plugin's
+ * write_guest returns 0). Cleared once each level has loaded. */
+struct Touch {Loaded *plugin; uint32_t bytes; bool stale;};
+std::map<uint32_t,Touch> touched;
+unsigned refusals=0;
+bool touched_stale(uint32_t address,size_t bytes) {
+    if(touched.empty())return false;
+    const uint64_t end=uint64_t(address)+bytes;
+    auto it=touched.lower_bound(address);
+    if(it!=touched.begin()) {
+        auto p=std::prev(it);
+        if(p->second.stale&&uint64_t(p->first)+p->second.bytes>address)return true;
+    }
+    for(;it!=touched.end()&&it->first<end;++it)
+        if(it->second.stale)return true;
+    return false;
+}
 int MERC_PLUGIN_CALL write_guest(void *ctx,uint32_t address,const void *data,size_t bytes) {
     if(!data||!span(ctx,address,bytes,true)||!accessible(const_cast<void*>(data),bytes,false))return 0;
+    if(touched_stale(address,bytes)) {
+        if(refusals++<32) {
+            char line[240];
+            snprintf(line,sizeof(line),"write guard: %s's write of %u byte(s) at %08X refused: the game freed the "
+                     "memory it wrote there before (an object of the last level, or one taken away), so it may "
+                     "belong to something else now; look the object up again",
+                     calling->manifest.id.c_str(),unsigned(bytes),address);
+            record(line);
+        }
+        return 0;
+    }
+    if(touched.size()>200000)touched.clear();
+    touched[address]=Touch{calling,uint32_t(bytes),false};
     memmove(static_cast<unsigned char*>(guest)+address,data,bytes);return 1;
 }
 bool updating=false;
@@ -266,6 +303,17 @@ void shutdown_all() {
     if(log_file)log_file.close();
 }
 }
+extern "C" void merc_plugins_guest_freed(uint32_t base,uint32_t bytes) {
+    if(touched.empty()||!bytes)return;
+    const uint64_t end=uint64_t(base)+bytes;
+    auto it=touched.lower_bound(base);
+    if(it!=touched.begin()) {
+        auto p=std::prev(it);
+        if(uint64_t(p->first)+p->second.bytes>base)p->second.stale=true;
+    }
+    for(;it!=touched.end()&&it->first<end;++it)it->second.stale=true;
+}
+extern "C" void merc_plugins_level_loaded(void) {touched.clear();}
 extern "C" const char *merc_plugins_error(void) {return failure.c_str();}
 extern "C" int merc_plugins_initialize(void *base,size_t bytes) {
     if(initialized){failure="Plugin host was initialized twice.";return 0;}
