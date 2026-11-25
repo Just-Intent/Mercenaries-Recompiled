@@ -25,6 +25,7 @@
  *   different parameter layouts (pointer vs value), so each needs its own bridge.
  */
 
+#include "preview_log.h"
 #include "kernel.h"
 #include "xbox_memory_layout.h"
 #include <stdio.h>
@@ -2433,6 +2434,21 @@ static void bridge_NtReadFile(void)
     g_eax = (uint32_t)xbox_NtReadFile(handle, NULL, NULL, NULL, &ios,
                 XBOX_TO_NATIVE(buffer_va), length, poff);
     bridge_write_iostatus(iostatus, ios.Status, (uint32_t)ios.Information);
+    {   /* foundry 0.320: a read (or its status) that lands on D3D's device,
+         * 0x299000-0x29C000 in any mirror of guest memory, is logged */
+        static unsigned logged;
+        const uint32_t lo = 0x00299000u, hi = 0x0029C000u;
+        const uint32_t b = buffer_va & 0x03FFFFFFu, s2 = iostatus & 0x03FFFFFFu;
+        const int hit_buf = length && b < hi && b + length > lo;
+        const int hit_ios = iostatus && s2 < hi && s2 + 8u > lo;
+        if ((hit_buf || hit_ios) && logged < 16u) {
+            logged++;
+            xbox_preview_log_event("guest-guard",
+                "file read onto D3D's device: buffer %08X, %u bytes at offset %lld, status block %08X "
+                "(guest function %08X, result %08X)", buffer_va, length,
+                poff ? (long long)poff->QuadPart : -1ll, iostatus, g_recomp_current_func, g_eax);
+        }
+    }
     if (bridge_trace_save_io_enabled() && raw_handle == s_save_trace_token) {
         fprintf(stderr,
                 "[SAVE-IO] read func=%08X token=%08X buffer=%08X offset=%lld length=%u "

@@ -20074,6 +20074,8 @@ static void recomp_dwatch_start(void)
                            g_dwatch_guest[0], g_dwatch_pointers ? " (pointers too)" : "");
 }
 
+void recomp_dwatch_start_boot(void) { recomp_dwatch_start(); }
+
 static void recomp_watch_arm(void);
 static void recomp_watch_write_table(const uint32_t *words);
 
@@ -20813,6 +20815,55 @@ void recomp_shop_page(uint32_t shop, uint32_t page, uint32_t has_items)
  * are any, +0x18 the low mark). A page is never given back to the main heap
  * (0x1F6A60 isn't called). Replaces 0x1F6BC0 (a bin's set-up), 0x1F66C0
  * (take a block) and 0x1F6AB0 (give one back). */
+/* D3D's device kept whole at each frame swap (0.320). Gaza's playtests
+ * crashed after a save loaded on SW (0.318, 0.319 twice): the device (static,
+ * 0x299380) held FFFFFFFF as its depth buffer (+0x1A08), so the swap's
+ * 0x28B7F0 AddRef'd -1. No guest write was seen by the hardware watch (the
+ * value is put there some other way: a file read, a mirror of the page, the
+ * GPU's view of memory). Each call of 0x28B7F0 now checks the pointers it's
+ * about to AddRef (+0x1A04 the render target, +0x1A08 the depth buffer, the
+ * four textures at +0xF88): one that isn't 0 or a guest address is put back
+ * to its value at the last swap (0 if that wasn't good either) and logged,
+ * with the words of the device that became FFFFFFFF since the last swap,
+ * so what was hit can be seen. */
+#define D3D_DEV_BYTES 0x2500u
+static uint32_t g_d3d_dev_prev[D3D_DEV_BYTES / 4u];
+static int g_d3d_dev_have;
+static int recomp_d3d_ptr_ok(uint32_t p)
+{
+    return p == 0u || (p >= 0x00010000u && p < 0x04000000u && !(p & 3u));
+}
+void recomp_d3d_device_check(uint32_t dev)
+{
+    static unsigned logged;
+    static const uint32_t slots[6] = {0x1A04u, 0x1A08u, 0xF88u, 0xF8Cu, 0xF90u, 0xF94u};
+    if (dev < 0x00010000u || dev >= 0x04000000u - D3D_DEV_BYTES) return;
+    for (unsigned k = 0; k < 6u; k++) {
+        const uint32_t now = guest_u32(dev + slots[k]);
+        if (recomp_d3d_ptr_ok(now)) continue;
+        const uint32_t was = g_d3d_dev_have ? g_d3d_dev_prev[slots[k] / 4u] : 0u;
+        const uint32_t put = recomp_d3d_ptr_ok(was) ? was : 0u;
+        *(volatile uint32_t *)guest_ptr(dev + slots[k]) = put;
+        if (logged < 16u) {
+            char hits[400];
+            int used = 0;
+            hits[0] = 0;
+            unsigned n = 0;
+            for (uint32_t i = 0; g_d3d_dev_have && i < D3D_DEV_BYTES / 4u && used < (int)sizeof(hits) - 16; i++)
+                if (guest_u32(dev + 4u * i) == now && g_d3d_dev_prev[i] != now) {
+                    n++;
+                    used += snprintf(hits + used, sizeof(hits) - used, " +%X(was %08X)", 4u * i, g_d3d_dev_prev[i]);
+                }
+            logged++;
+            xbox_preview_log_event("guest-guard",
+                "d3d device: +%X held %08X at the frame swap (was %08X at the last); put back %08X. "
+                "Words now %08X that weren't at the last swap: %u%s", slots[k], now, was, put, now, n, hits);
+        }
+    }
+    memcpy(g_d3d_dev_prev, (const void *)guest_ptr(dev), D3D_DEV_BYTES);
+    g_d3d_dev_have = 1;
+}
+
 /* developer.ini [Developer], beside the exe or in MERCENARIES_CONFIG_ROOT */
 static void recomp_dev_ini_path(char *path, size_t size)
 {
@@ -20843,6 +20894,7 @@ static uint32_t g_sb_wait = 64u;
 int recomp_sb_on(void)
 {
     if (g_sb_mode < 0) {
+        { void recomp_dwatch_start_boot(void); recomp_dwatch_start_boot(); }   /* 0.320: the write watch from boot */
         char path[MAX_PATH], text[32] = "";
         recomp_dev_ini_path(path, sizeof(path));
         if (path[0]) GetPrivateProfileStringA("Developer", "small_blocks", "", text, sizeof(text), path);
