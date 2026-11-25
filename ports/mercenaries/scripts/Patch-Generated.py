@@ -15206,7 +15206,7 @@ PATCHES += (
         'loc_001F7096: ;\n    { int recomp_small_alloc_failed(uint32_t); const uint32_t _size = MEM32(esp + 0x14);   /* foundry: a failed small allocation tries the main heap (0.300) */\n      if (recomp_small_alloc_failed(_size)) {\n        PUSH32(esp, edi); PUSH32(esp, ebx); PUSH32(esp, 0); PUSH32(esp, ebp); PUSH32(esp, _size);\n        ecx = 0x645984;\n        PUSH32(esp, 0); sub_001F6D80();\n        if (eax) goto loc_001F70C0;\n      } }\n    goto loc_001F70A0;'),
     GeneratedPatch('Write guard: small block freed at 001F6AB0',
         'loc_001F6AB0: ;\n    edx = MEM32(ecx + 8);\n    eax = MEM32(esp + 4);',
-        'loc_001F6AB0: ;\n    { void merc_plugins_guest_freed(uint32_t, uint32_t); merc_plugins_guest_freed(MEM32(esp + 4), MEM32(ecx + 0xC)); }   /* foundry: the write guard sees a small block freed */\n    edx = MEM32(ecx + 8);\n    eax = MEM32(esp + 4);'),
+        'loc_001F6AB0: ;\n    { int recomp_bin_free_check(uint32_t, uint32_t); if (recomp_bin_free_check(ecx, MEM32(esp + 4))) { esp += 8; return; } }   /* foundry: a second free of a small block is refused (0.315) */\n    { void merc_plugins_guest_freed(uint32_t, uint32_t); merc_plugins_guest_freed(MEM32(esp + 4), MEM32(ecx + 0xC)); }   /* foundry: the write guard sees a small block freed */\n    edx = MEM32(ecx + 8);\n    eax = MEM32(esp + 4);'),
     GeneratedPatch('Write guard: main heap block freed at 001F6989',
         'loc_001F6989: ;\n    eax = MEM32(esp + 8);\n    ecx = MEM32(esi + 8);',
         'loc_001F6989: ;\n    { void merc_plugins_guest_freed(uint32_t, uint32_t); merc_plugins_guest_freed(MEM32(esp + 4), MEM32(esp + 8)); }   /* foundry: the write guard sees a main-heap block freed */\n    eax = MEM32(esp + 8);\n    ecx = MEM32(esi + 8);'),

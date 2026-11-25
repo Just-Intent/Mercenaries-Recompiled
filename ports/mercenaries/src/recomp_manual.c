@@ -20647,12 +20647,61 @@ uint32_t recomp_bin_pop(uint32_t bin, uint32_t head)
             head_ok ? "free block" : "free list head", head, head_ok ? "'s link to the next is " : " isn't a block of it; ",
             head_ok ? next : 0u, w[0], w[1], w[2], w[3], w[4], w[5], w[6], w[7], (uint32_t)g_recomp_current_func);
     }
-    if (!head_ok) {
-        *(volatile uint32_t *)guest_ptr(bin + 8u) = 0u;   /* the bin empty: the allocation goes elsewhere */
-        return 0u;
+    /* the bin left empty either way: a head whose link is bad may itself be
+     * in use (0.315: at 20:49 one held a live actor-pool object, vtable
+     * 002E0668), so it isn't handed out; the allocation goes elsewhere */
+    *(volatile uint32_t *)guest_ptr(bin + 8u) = 0u;
+    return 0u;
+}
+
+/* A small block freed twice (0.315): 0x1F6AB0 pushes a freed block on its
+ * bin's free list, and a block already on it ends up there twice, handed out
+ * twice later: two owners in one block, the second's writes over the first's
+ * (the free-list links and the actor pool's links found overwritten). So a
+ * free is checked first: a block already free is logged with who freed it
+ * again (native callers, guest code on the guest stack, its first words) and
+ * not pushed again. A block that isn't one of the bin's is logged and left. */
+int recomp_bin_free_check(uint32_t bin, uint32_t block)
+{
+    static unsigned logged;
+    const char *why = NULL;
+    if (!recomp_bin_block_ok(bin, block))
+        why = "isn't one of its blocks";
+    else {
+        uint32_t p = guest_u32(bin + 8u);
+        for (unsigned n = 0; p && n < 4096u; n++) {
+            if (p == block) { why = "is free already (a second free)"; break; }
+            if (!recomp_bin_block_ok(bin, p)) break;
+            p = guest_u32(p);
+        }
     }
-    *(volatile uint32_t *)guest_ptr(head) = 0u;           /* handed out; the bin empty after it */
-    return head;
+    if (!why)
+        return 0;
+    if (logged < 12u) {
+        void *frames[10] = {0};
+        const uintptr_t base = (uintptr_t)GetModuleHandleW(NULL);
+        const USHORT n = RtlCaptureStackBackTrace(1, 10, frames, NULL);
+        uint32_t gs[6] = {0}, w[8] = {0};
+        unsigned ng = 0;
+        logged++;
+        for (uint32_t a = g_esp; a < g_esp + 0x200u && ng < 6u; a += 4u) {
+            const uint32_t v = guest_u32(a);
+            if (v >= 0x00011000u && v < 0x002DC000u) gs[ng++] = v;
+        }
+        if (recomp_bin_block_ok(bin, block))
+            for (unsigned i = 0; i < 8u; i++) w[i] = guest_u32(block + 4u * i);
+        xbox_preview_log_event("guest-guard",
+            "small-block bin %u (%u-byte blocks): freeing %08X, which %s; not freed again. First words %08X %08X "
+            "%08X %08X %08X %08X %08X %08X; native callers %llX %llX %llX %llX %llX %llX %llX %llX; guest code on its "
+            "stack %08X %08X %08X %08X %08X %08X",
+            (bin - 0x643928u) / 32u, guest_u32(bin + 0xCu), block, why, w[0], w[1], w[2], w[3], w[4], w[5], w[6], w[7],
+            (unsigned long long)(n > 0 ? (uintptr_t)frames[0] - base : 0), (unsigned long long)(n > 1 ? (uintptr_t)frames[1] - base : 0),
+            (unsigned long long)(n > 2 ? (uintptr_t)frames[2] - base : 0), (unsigned long long)(n > 3 ? (uintptr_t)frames[3] - base : 0),
+            (unsigned long long)(n > 4 ? (uintptr_t)frames[4] - base : 0), (unsigned long long)(n > 5 ? (uintptr_t)frames[5] - base : 0),
+            (unsigned long long)(n > 6 ? (uintptr_t)frames[6] - base : 0), (unsigned long long)(n > 7 ? (uintptr_t)frames[7] - base : 0),
+            gs[0], gs[1], gs[2], gs[3], gs[4], gs[5]);
+    }
+    return 1;
 }
 
 #define RECOMP_STRIKE_REACT_M 100.0f
