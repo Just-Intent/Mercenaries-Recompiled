@@ -11675,14 +11675,38 @@ void recomp_human_fire_anim_checkpoint(uint32_t human, uint32_t anim,
 
 static uint32_t g_bullet_damage_actor;
 static uint8_t g_bullet_damage_before[0x1000];
+/* 0.346: developer.ini [Developer] trace_bullets=1 sends these to the
+ * preview log too (stderr isn't collected on a playtest PC), for Gaza's
+ * soldiers that bullets don't hurt: whether a round hits them and the damage
+ * is refused, or hits something else, or nothing */
+int recomp_dev_ini_int(const char *key, int fallback);
+static int recomp_trace_bullets(void)
+{
+    static int on = -1;
+    if (on < 0) on = getenv("MERCENARIES_TRACE_BULLET_HITS") != NULL || recomp_dev_ini_int("trace_bullets", 0) == 1;
+    return on;
+}
 static int g_bullet_damage_snapshot_valid;
 
 void recomp_bullet_hit_checkpoint(uint32_t stage, uint32_t projectile,
                                   uint32_t actor, uint32_t value)
 {
     static unsigned int samples;
-    if (getenv("MERCENARIES_TRACE_BULLET_HITS") == NULL || samples++ >= 512u)
+    if (!recomp_trace_bullets() || samples++ >= 512u)
         return;
+    if (samples <= 200u) {
+        /* the hit actor's world object and its model hash, so a log shows whose it was */
+        const uint32_t wo = actor ? guest_u32(actor + 8u) : 0u;
+        xbox_preview_log_event("guest-snapshot",
+            "bullet hit %u: stage %u projectile %08X actor %08X (vtable %08X) value %08X at (%.2f, %.2f, %.2f), "
+            "actor at (%.2f, %.2f, %.2f), damage %g/%g/%g type %08X",
+            samples, stage, projectile, actor, actor ? guest_u32(actor) : 0u, value,
+            guest_f32(projectile + 0xE0u), guest_f32(projectile + 0xE4u), guest_f32(projectile + 0xE8u),
+            actor ? guest_f32(actor + 0xE0u) : 0.0f, actor ? guest_f32(actor + 0xE4u) : 0.0f,
+            actor ? guest_f32(actor + 0xE8u) : 0.0f, guest_f32(projectile + 0x178u),
+            guest_f32(projectile + 0x17Cu), guest_f32(projectile + 0x180u), guest_u32(projectile + 0x1B4u));
+        (void)wo;
+    }
     if (stage == 1u && actor >= 0x00010000u &&
         actor <= 0x04000000u - sizeof(g_bullet_damage_before)) {
         memcpy(g_bullet_damage_before, guest_ptr(actor),
@@ -11711,8 +11735,14 @@ void recomp_bullet_damage_result_checkpoint(uint32_t projectile,
                                             uint32_t actor, float result)
 {
     unsigned int changed = 0u;
-    if (getenv("MERCENARIES_TRACE_BULLET_HITS") == NULL)
+    if (!recomp_trace_bullets())
         return;
+    {
+        static unsigned said;
+        if (said++ < 200u)
+            xbox_preview_log_event("guest-snapshot", "bullet damage: projectile %08X actor %08X (vtable %08X) result %g",
+                                   projectile, actor, actor ? guest_u32(actor) : 0u, (double)result);
+    }
     fprintf(stderr,
             "[BULLET-DAMAGE] projectile=%08X actor=%08X "
             "actor-vtable=%08X result=%.7g\n",
