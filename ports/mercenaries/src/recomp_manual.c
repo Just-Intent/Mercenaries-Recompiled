@@ -20875,6 +20875,7 @@ void recomp_d3d_device_check(uint32_t dev)
  * last game functions (trace_calls=1 fills them), and the six pointers the
  * swap AddRefs (+0x1A04, +0x1A08, +0xF88..+0xF94) are put back at once when
  * one turns into something that isn't 0 or a guest address. */
+static void recomp_alias_guard_poll(void);
 static DWORD WINAPI recomp_d3d_sampler(LPVOID unused)
 {
     (void)unused;
@@ -20882,8 +20883,10 @@ static DWORD WINAPI recomp_d3d_sampler(LPVOID unused)
     static const uint32_t slots[6] = {0x1A04u, 0x1A08u, 0xF88u, 0xF8Cu, 0xF90u, 0xF94u};
     uint32_t have_dev = 0;
     unsigned logged = 0;
+    unsigned tick = 0;
     for (;;) {
         Sleep(1);
+        if ((tick++ % 100u) == 0u) recomp_alias_guard_poll();   /* 0.326 */
         const uint32_t dev = guest_u32(0x299378u);
         if (dev < 0x00010000u || dev >= 0x04000000u - D3D_DEV_BYTES) { have_dev = 0; continue; }
         memcpy(cur, (const void *)guest_ptr(dev), D3D_DEV_BYTES);
@@ -20910,6 +20913,102 @@ static DWORD WINAPI recomp_d3d_sampler(LPVOID unused)
             cur[i] = prev[i];
         }
         memcpy(prev, cur, sizeof(prev));
+    }
+}
+
+/* The device's pages read-only in guest memory's other views (0.326). The
+ * 0.325 run saw two words of the device change in one millisecond (+128C to
+ * FFFFFFFF, +1A04 to 2) and then garbage elsewhere in it, with the hardware
+ * watch (on the main view's address) silent. Guest RAM has other views of
+ * the same bytes: the 0xF0000000 aperture (D3D's locks hand out addresses
+ * there), the 0x80000000 alias and the mirrors at 64 MB steps. A write
+ * through one of those isn't seen by a watch on the main address. Here the
+ * pages holding the device (0x299000-0x29C000) are made read-only in each of
+ * those views that's mapped (looked at again every 100 ms, as the alias maps
+ * on demand); a write through one faults, is logged (the view, the guest
+ * address, the value about to be written isn't known: the native code and
+ * callers, the guest function and registers), and the page is made writable
+ * again so the write goes ahead; it's protected again 100 ms later. The main
+ * view is never touched. */
+#define ALIAS_GUARD_LO 0x00299000u
+#define ALIAS_GUARD_HI 0x0029C000u
+#define ALIAS_GUARD_MAX 40
+static uintptr_t g_alias_guard_at[ALIAS_GUARD_MAX];   /* native address of each view's pages */
+static uint32_t g_alias_guard_base[ALIAS_GUARD_MAX];   /* the view's guest base */
+static volatile LONG g_alias_guard_on[ALIAS_GUARD_MAX];
+static unsigned g_alias_guard_n, g_alias_guard_logged;
+
+static LONG CALLBACK recomp_alias_guard_handler(PEXCEPTION_POINTERS info)
+{
+    PEXCEPTION_RECORD r = info->ExceptionRecord;
+    if (r->ExceptionCode != EXCEPTION_ACCESS_VIOLATION || r->NumberParameters < 2 || r->ExceptionInformation[0] != 1)
+        return EXCEPTION_CONTINUE_SEARCH;
+    const uintptr_t at = (uintptr_t)r->ExceptionInformation[1];
+    for (unsigned i = 0; i < g_alias_guard_n; i++) {
+        const uintptr_t lo = g_alias_guard_at[i];
+        if (at < lo || at >= lo + (ALIAS_GUARD_HI - ALIAS_GUARD_LO)) continue;
+        DWORD old;
+        VirtualProtect((void *)lo, ALIAS_GUARD_HI - ALIAS_GUARD_LO, PAGE_READWRITE, &old);
+        InterlockedExchange(&g_alias_guard_on[i], 0);
+        if (g_alias_guard_logged < 32u) {
+            g_alias_guard_logged++;
+            const uintptr_t base = (uintptr_t)GetModuleHandleW(NULL);
+            unsigned long long callers[6] = {0};
+            CONTEXT c = *info->ContextRecord;
+            for (unsigned f = 0; f < 6u; f++) {
+                DWORD64 image = 0;
+                PRUNTIME_FUNCTION fn = RtlLookupFunctionEntry(c.Rip, &image, NULL);
+                if (!fn) break;
+                PVOID hd;
+                DWORD64 est;
+                RtlVirtualUnwind(UNW_FLAG_NHANDLER, image, c.Rip, fn, &c, &hd, &est, NULL);
+                if (!c.Rip) break;
+                callers[f] = (unsigned long long)(c.Rip - base);
+            }
+            const uint32_t guest_at = ALIAS_GUARD_LO + (uint32_t)(at - lo);
+            xbox_preview_log_event("guest-guard",
+                "alias write onto D3D's device: guest %08X (device +%X) through the view at %08X, by native rva %llX "
+                "on thread %lu (guest function %08X; eax %08X ecx %08X edx %08X ebx %08X esi %08X edi %08X esp %08X); "
+                "native callers %llX %llX %llX %llX %llX %llX",
+                g_alias_guard_base[i] + guest_at, guest_at - 0x299380u, g_alias_guard_base[i],
+                (unsigned long long)((uintptr_t)r->ExceptionAddress - base), GetCurrentThreadId(),
+                (uint32_t)g_recomp_current_func, g_eax, g_ecx, g_edx, g_ebx, g_esi, g_edi, g_esp,
+                callers[0], callers[1], callers[2], callers[3], callers[4], callers[5]);
+        }
+        return EXCEPTION_CONTINUE_EXECUTION;
+    }
+    return EXCEPTION_CONTINUE_SEARCH;
+}
+
+/* every 100 ms from the device thread: find the views mapped now, protect them */
+static void recomp_alias_guard_poll(void)
+{
+    static int handler;
+    if (!handler) handler = AddVectoredExceptionHandler(1, recomp_alias_guard_handler) != NULL;
+    if (!handler) return;
+    const uintptr_t main_base = (uintptr_t)g_xbox_mem_offset;
+    static const uint32_t fixed[2] = {0xF0000000u, 0x80000000u};
+    for (unsigned v = 0; v < 2u + 31u; v++) {
+        const uint32_t vbase = v < 2u ? fixed[v] : 0x04000000u * (v - 1u);
+        const uintptr_t native = main_base + (uintptr_t)vbase + ALIAS_GUARD_LO;
+        unsigned slot = 0;
+        while (slot < g_alias_guard_n && g_alias_guard_at[slot] != native) slot++;
+        if (slot < g_alias_guard_n && g_alias_guard_on[slot]) continue;
+        MEMORY_BASIC_INFORMATION mbi;
+        if (!VirtualQuery((void *)native, &mbi, sizeof(mbi)) || mbi.State != MEM_COMMIT || mbi.Type != MEM_MAPPED ||
+            (uintptr_t)mbi.AllocationBase == main_base)          /* the main view (or real RAM past 64 MB) */
+            continue;
+        if (slot == g_alias_guard_n) {
+            if (g_alias_guard_n >= ALIAS_GUARD_MAX) continue;
+            g_alias_guard_at[slot] = native;
+            g_alias_guard_base[slot] = vbase;
+            g_alias_guard_n++;
+            if (g_alias_guard_n == 1u || v < 2u)
+                xbox_preview_log_event("guest-guard", "alias guard: D3D's device pages read-only in the view at %08X", vbase);
+        }
+        DWORD old;
+        if (VirtualProtect((void *)native, ALIAS_GUARD_HI - ALIAS_GUARD_LO, PAGE_READONLY, &old))
+            InterlockedExchange(&g_alias_guard_on[slot], 1);
     }
 }
 
