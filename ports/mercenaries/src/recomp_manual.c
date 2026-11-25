@@ -20661,12 +20661,84 @@ uint32_t recomp_bin_pop(uint32_t bin, uint32_t head)
  * free is checked first: a block already free is logged with who freed it
  * again (native callers, guest code on the guest stack, its first words) and
  * not pushed again. A block that isn't one of the bin's is logged and left. */
+/* Freed small blocks kept back a while (0.316). 0.315 showed it's no double
+ * free: a block is written after its one free (20:19, 22:55: its first words
+ * a run of list-link pointers, a pool container's vtable 0x300DE0 at +0x18),
+ * so whatever still held it writes into a block the bin may already have
+ * handed to someone else. Each freed block now waits in its bin's queue (the
+ * last 64 freed, with a copy of its first 32 bytes) before it goes back on
+ * the free list: a late write lands in memory nobody has, and when the block
+ * leaves the queue a change is logged ("written after its free", the words
+ * before and after). Blocks never go back to the main heap from here (a bin's
+ * page stays). */
+#define BINQ_LEN 64u
+#define BINQ_BINS 256u
+typedef struct { uint32_t block, words[8]; } BinQ;
+static BinQ *g_binq[BINQ_BINS];
+static unsigned g_binq_n[BINQ_BINS], g_binq_at[BINQ_BINS];
+
+static int recomp_binq_has(unsigned b, uint32_t block)
+{
+    if (!g_binq[b]) return 0;
+    for (unsigned i = 0; i < g_binq_n[b]; i++)
+        if (g_binq[b][i].block == block) return 1;
+    return 0;
+}
+
+static void recomp_bin_push(uint32_t bin, uint32_t block)
+{
+    *(volatile uint32_t *)guest_ptr(block) = guest_u32(bin + 8u);
+    *(volatile uint32_t *)guest_ptr(bin + 8u) = block;
+    *(volatile uint32_t *)guest_ptr(bin + 0x14u) = guest_u32(bin + 0x14u) + 1u;
+}
+
+/* 1: the free is handled here (queued, or refused); 0: as retail */
+static int recomp_binq_free(uint32_t bin, uint32_t block)
+{
+    static unsigned logged;
+    const unsigned b = (bin - 0x643928u) / 32u;
+    if (b >= BINQ_BINS) return 0;
+    if (!g_binq[b] && !(g_binq[b] = (BinQ *)calloc(BINQ_LEN, sizeof(BinQ)))) return 0;
+    BinQ *q = g_binq[b];
+    if (g_binq_n[b] == BINQ_LEN) {
+        BinQ *old = &q[g_binq_at[b]];
+        int changed = 0;
+        for (unsigned i = 0; i < 8u; i++) changed |= guest_u32(old->block + 4u * i) != old->words[i];
+        if (changed && logged < 16u) {
+            logged++;
+            xbox_preview_log_event("guest-guard",
+                "small-block bin %u (%u-byte blocks): block %08X written after its free: first words were %08X %08X "
+                "%08X %08X %08X %08X %08X %08X, now %08X %08X %08X %08X %08X %08X %08X %08X (kept from reuse until now)",
+                b, guest_u32(bin + 0xCu), old->block, old->words[0], old->words[1], old->words[2], old->words[3],
+                old->words[4], old->words[5], old->words[6], old->words[7], guest_u32(old->block),
+                guest_u32(old->block + 4u), guest_u32(old->block + 8u), guest_u32(old->block + 12u),
+                guest_u32(old->block + 16u), guest_u32(old->block + 20u), guest_u32(old->block + 24u),
+                guest_u32(old->block + 28u));
+        }
+        recomp_bin_push(bin, old->block);
+        g_binq_at[b] = (g_binq_at[b] + 1u) % BINQ_LEN;   /* the oldest has left */
+        g_binq_n[b]--;
+    }
+    {   /* the write guard hears of it now (the free path's own call comes after this check) */
+        void merc_plugins_guest_freed(uint32_t, uint32_t);
+        merc_plugins_guest_freed(block, guest_u32(bin + 0xCu));
+    }
+    BinQ *slot = &q[(g_binq_at[b] + g_binq_n[b]) % BINQ_LEN];
+    slot->block = block;
+    for (unsigned i = 0; i < 8u; i++) slot->words[i] = guest_u32(block + 4u * i);
+    g_binq_n[b]++;
+    return 1;
+}
+
 int recomp_bin_free_check(uint32_t bin, uint32_t block)
 {
     static unsigned logged;
     const char *why = NULL;
+    const unsigned qb = (bin - 0x643928u) / 32u;
     if (!recomp_bin_block_ok(bin, block))
         why = "isn't one of its blocks";
+    else if (qb < BINQ_BINS && recomp_binq_has(qb, block))
+        why = "is free already (a second free, while it waited to be reused)";
     else {
         uint32_t p = guest_u32(bin + 8u);
         for (unsigned n = 0; p && n < 4096u; n++) {
@@ -20676,7 +20748,7 @@ int recomp_bin_free_check(uint32_t bin, uint32_t block)
         }
     }
     if (!why)
-        return 0;
+        return recomp_binq_free(bin, block);
     if (logged < 12u) {
         void *frames[10] = {0};
         const uintptr_t base = (uintptr_t)GetModuleHandleW(NULL);
@@ -20702,6 +20774,23 @@ int recomp_bin_free_check(uint32_t bin, uint32_t block)
             gs[0], gs[1], gs[2], gs[3], gs[4], gs[5]);
     }
     return 1;
+}
+
+/* The PDA store's page as 0xCE9F0 picks it (0.316): 0 none (no tab has an
+ * item, or the lock is on), 1 its list, 5 the closed page the Mafia's mood
+ * gives (0x95B70 / 0x95EE0 on faction 4, unless the port's supplier check
+ * passes). Logged with what it went by, for a store that showed closed with
+ * its items in (Gaza's, after a save's return). */
+int recomp_mod_pda_has_available_supplier(uint32_t shop);
+void recomp_shop_page(uint32_t shop, uint32_t page, uint32_t has_items)
+{
+    static unsigned logged;
+    if (logged++ >= 24u) return;
+    xbox_preview_log_event("pda-shop",
+        "page %u (%s): a tab with items %u, lock %u, %u in the list, tabs %u %u %u, another supplier %d",
+        page, page == 1u ? "its list" : page == 5u ? "closed: the Mafia's mood" : "none: no items or locked",
+        has_items & 0xFFu, (unsigned)guest_u8(shop + 0x19BCu), guest_u32(shop + 0x1794u), guest_u32(shop + 0x1798u),
+        guest_u32(shop + 0x179Cu), guest_u32(shop + 0x17A0u), recomp_mod_pda_has_available_supplier(shop));
 }
 
 #define RECOMP_STRIKE_REACT_M 100.0f
