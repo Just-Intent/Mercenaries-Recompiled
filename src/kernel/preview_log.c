@@ -182,7 +182,8 @@ static void enqueue_event(const char *category,const char *format,va_list args,i
     ULONGLONG now; unsigned bucket; char *record; int offset,priority; size_t len;
     if(!enabled) return;
     if(!TryAcquireSRWLockExclusive(&queue_lock)){InterlockedIncrement(&lost);return;}
-    priority=!strncmp(category,"USER-MARKER",11) || !strcmp(category,"renderer-recovery") || !strcmp(category,"session");
+    priority=!strncmp(category,"USER-MARKER",11) || !strcmp(category,"renderer-recovery") || !strcmp(category,"session")
+        || !strcmp(category,"guest-snapshot");   /* foundry 0.343: a snapshot's lines all kept */
     now=GetTickCount64();bucket=((uintptr_t)format>>4)&127;
     if((!priority && coalesce && throttle[bucket].format==format && now-throttle[bucket].last<1000) ||
         count >= (priority ? QUEUE_SIZE : QUEUE_SIZE-8)) {InterlockedIncrement(&lost);ReleaseSRWLockExclusive(&queue_lock);return;}

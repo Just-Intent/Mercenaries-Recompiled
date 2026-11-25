@@ -20890,15 +20890,24 @@ static void recomp_d3d_snapshot(const uint32_t *prev, const uint32_t *cur, uint3
 {
     static unsigned snaps;
     if (snaps++ >= 2u) return;
-    char line[900];
+    /* 0.343: in lines that fit a log record (768 bytes), under a category the
+     * log keeps whole (no coalescing of same-format lines, no rate limit):
+     * 0.329's and 0.342's lost all but one thread line and cut the words */
+    char line[600];
     int used = 0;
-    unsigned n = 0;
-    for (uint32_t i = 0; i < D3D_DEV_BYTES / 4u && used < (int)sizeof(line) - 40; i++)
-        if (cur[i] != prev[i]) {
-            n++;
-            used += snprintf(line + used, sizeof(line) - used, " +%X:%08X>%08X", 4u * i, prev[i], cur[i]);
+    unsigned n = 0, part = 0;
+    for (uint32_t i = 0; i < D3D_DEV_BYTES / 4u; i++) {
+        if (cur[i] == prev[i]) continue;
+        n++;
+        used += snprintf(line + used, sizeof(line) - used, " +%X:%08X>%08X", 4u * i, prev[i], cur[i]);
+        if (used > (int)sizeof(line) - 40) {
+            xbox_preview_log_event("guest-snapshot", "d3d device snapshot %u: device %08X words changed in the last ms:%s", ++part, dev, line);
+            used = 0;
+            line[0] = 0;
         }
-    xbox_preview_log_event("guest-guard", "d3d device snapshot: %u words of the device (%08X) changed in the last ms:%s", n, dev, line);
+    }
+    xbox_preview_log_event("guest-snapshot", "d3d device snapshot %u: device %08X words changed in the last ms (%u in all):%s",
+                           ++part, dev, n, used ? line : "");
     const uintptr_t base = (uintptr_t)GetModuleHandleW(NULL);
     HANDLE snap = CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0);
     if (snap == INVALID_HANDLE_VALUE) return;
@@ -20946,7 +20955,7 @@ static void recomp_d3d_snapshot(const uint32_t *prev, const uint32_t *cur, uint3
         }
         CloseHandle(t);
         listed++;
-        xbox_preview_log_event("guest-guard", "d3d device snapshot: thread %lu at rva %llX%s; callers %llX %llX %llX",
+        xbox_preview_log_event("guest-snapshot", "d3d device snapshot: thread %lu at rva %llX%s; callers %llX %llX %llX",
                                te.th32ThreadID, rv[0], where, rv[1], rv[2], rv[3]);
     }
     CloseHandle(snap);
