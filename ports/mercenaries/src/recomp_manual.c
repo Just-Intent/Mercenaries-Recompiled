@@ -19935,6 +19935,7 @@ static void recomp_guard_report(const char *what, uint32_t a, uint32_t b, uint32
 #define DWATCH_MAX 4
 static uint32_t g_dwatch_guest[DWATCH_MAX];
 static unsigned g_dwatch_count, g_dwatch_logged;
+static int g_dwatch_pointers;                 /* developer.ini watch_pointers=1 */
 static DWORD g_dwatch_armed_ids[256];
 static unsigned g_dwatch_armed_n;
 
@@ -19999,8 +20000,13 @@ static LONG CALLBACK recomp_dwatch_handler(PEXCEPTION_POINTERS info)
      * anything else (the stray write was a hash or a float) is logged */
     {
         static unsigned pointers;
-        const uint32_t now = guest_u32(g_dwatch_guest[which]);
-        if (now >= 0x10000u && now < 0x04000000u) { pointers++; return EXCEPTION_CONTINUE_EXECUTION; }
+        const uint32_t now = guest_u32(g_dwatch_guest[which]), at = g_dwatch_guest[which];
+        /* watch_pointers=1: pointers too, all but 0 and those within 1 MB of
+         * the address (its own structure's links), for a freed block whose
+         * first words were overwritten with another object's pointers */
+        const int pointer = now >= 0x10000u && now < 0x04000000u;
+        const int close_by = now == 0u || (now + 0x100000u > at && now < at + 0x100000u);
+        if (g_dwatch_pointers ? close_by : pointer) { pointers++; return EXCEPTION_CONTINUE_EXECUTION; }
         if (g_dwatch_logged >= 200u) return EXCEPTION_CONTINUE_EXECUTION;
         if (!g_dwatch_logged)
             xbox_preview_log_event("guest-guard", "write watch: %u pointer write(s) there so far, not logged", pointers);
@@ -20056,6 +20062,7 @@ static void recomp_dwatch_start(void)
         if (!env) return;
         snprintf(text, sizeof(text), "%s", env);
     }
+    g_dwatch_pointers = GetPrivateProfileIntA("Developer", "watch_pointers", 0, path) == 1;
     for (char *tok = strtok(text, ", "); tok && g_dwatch_count < DWATCH_MAX; tok = strtok(NULL, ", ")) {
         const unsigned long v = strtoul(tok, NULL, 16);
         if (v >= 0x10000u && v < 0x04000000u && !(v & 3u)) g_dwatch_guest[g_dwatch_count++] = (uint32_t)v;
@@ -20063,8 +20070,8 @@ static void recomp_dwatch_start(void)
     if (!g_dwatch_count || !AddVectoredExceptionHandler(1, recomp_dwatch_handler)) return;
     HANDLE t = CreateThread(NULL, 0, recomp_dwatch_thread, NULL, 0, NULL);
     if (t) CloseHandle(t);
-    xbox_preview_log_event("guest-guard", "write watch (hardware) on %u address(es), the first %08X", g_dwatch_count,
-                           g_dwatch_guest[0]);
+    xbox_preview_log_event("guest-guard", "write watch (hardware) on %u address(es), the first %08X%s", g_dwatch_count,
+                           g_dwatch_guest[0], g_dwatch_pointers ? " (pointers too)" : "");
 }
 
 static void recomp_watch_arm(void);
