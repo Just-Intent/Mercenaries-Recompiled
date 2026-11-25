@@ -19921,12 +19921,159 @@ static void recomp_guard_report(const char *what, uint32_t a, uint32_t b, uint32
         (unsigned long long)(n > 3 ? (uintptr_t)frames[3] - base : 0), reports);
 }
 
+/* A hardware write watch (0.312): developer.ini [Developer]
+ * watch_write=0x00FDC320 (up to four, comma-separated guest addresses) puts
+ * the CPU's debug registers on them in every thread of the game, so the
+ * first writes to each stop for a moment and are logged as "write watch hit"
+ * in the preview log: the guest address, the value now there, the native
+ * code (rva, for mercenaries_recomp.map), the guest function and registers,
+ * the native callers (unwound from the write) and guest code addresses on
+ * the guest stack. No page protection, so nothing else on the page is
+ * slowed. For writes that land on the same address every run (Gaza's SW
+ * load after a Gaza save: 0x00FDC320 got AE2BEC37 with no plugin writing). */
+#include <tlhelp32.h>
+#define DWATCH_MAX 4
+static uint32_t g_dwatch_guest[DWATCH_MAX];
+static unsigned g_dwatch_count, g_dwatch_logged;
+static DWORD g_dwatch_armed_ids[256];
+static unsigned g_dwatch_armed_n;
+
+static void recomp_dwatch_set(HANDLE t)
+{
+    CONTEXT c;
+    memset(&c, 0, sizeof(c));
+    c.ContextFlags = CONTEXT_DEBUG_REGISTERS;
+    if (SuspendThread(t) == (DWORD)-1) return;
+    if (GetThreadContext(t, &c)) {
+        DWORD64 *dr[4] = {&c.Dr0, &c.Dr1, &c.Dr2, &c.Dr3};
+        for (unsigned i = 0; i < g_dwatch_count; i++) {
+            *dr[i] = (DWORD64)((uintptr_t)g_xbox_mem_offset + g_dwatch_guest[i]);
+            c.Dr7 |= (DWORD64)1 << (2 * i);                        /* local enable */
+            c.Dr7 &= ~((DWORD64)0xF << (16 + 4 * i));
+            c.Dr7 |= (DWORD64)(0x1 | 0xC) << (16 + 4 * i);          /* on writes, 4 bytes */
+        }
+        SetThreadContext(t, &c);
+    }
+    ResumeThread(t);
+}
+
+static DWORD WINAPI recomp_dwatch_thread(LPVOID unused)
+{
+    (void)unused;
+    for (;;) {
+        HANDLE snap = CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0);
+        if (snap != INVALID_HANDLE_VALUE) {
+            THREADENTRY32 te;
+            te.dwSize = sizeof(te);
+            for (BOOL ok = Thread32First(snap, &te); ok; ok = Thread32Next(snap, &te)) {
+                if (te.th32OwnerProcessID != GetCurrentProcessId() || te.th32ThreadID == GetCurrentThreadId())
+                    continue;
+                unsigned k = 0;
+                while (k < g_dwatch_armed_n && g_dwatch_armed_ids[k] != te.th32ThreadID) k++;
+                if (k < g_dwatch_armed_n) continue;
+                HANDLE t = OpenThread(THREAD_SUSPEND_RESUME | THREAD_GET_CONTEXT | THREAD_SET_CONTEXT, FALSE,
+                                      te.th32ThreadID);
+                if (!t) continue;
+                recomp_dwatch_set(t);
+                CloseHandle(t);
+                if (g_dwatch_armed_n < 256u) g_dwatch_armed_ids[g_dwatch_armed_n++] = te.th32ThreadID;
+            }
+            CloseHandle(snap);
+        }
+        Sleep(2000);                           /* threads made later get it too */
+    }
+}
+
+static LONG CALLBACK recomp_dwatch_handler(PEXCEPTION_POINTERS info)
+{
+    PEXCEPTION_RECORD r = info->ExceptionRecord;
+    PCONTEXT ctx = info->ContextRecord;
+    if (r->ExceptionCode != EXCEPTION_SINGLE_STEP || !(ctx->Dr6 & 0xFu))
+        return EXCEPTION_CONTINUE_SEARCH;
+    const unsigned which = (ctx->Dr6 & 1u) ? 0u : (ctx->Dr6 & 2u) ? 1u : (ctx->Dr6 & 4u) ? 2u : 3u;
+    ctx->Dr6 &= ~(DWORD64)0xF;
+    if (which >= g_dwatch_count)
+        return EXCEPTION_CONTINUE_EXECUTION;
+    /* the address is ordinary heap memory, reused by many objects in a
+     * session: writes of a guest pointer (links, owners) are only counted;
+     * anything else (the stray write was a hash or a float) is logged */
+    {
+        static unsigned pointers;
+        const uint32_t now = guest_u32(g_dwatch_guest[which]);
+        if (now >= 0x10000u && now < 0x04000000u) { pointers++; return EXCEPTION_CONTINUE_EXECUTION; }
+        if (g_dwatch_logged >= 200u) return EXCEPTION_CONTINUE_EXECUTION;
+        if (!g_dwatch_logged)
+            xbox_preview_log_event("guest-guard", "write watch: %u pointer write(s) there so far, not logged", pointers);
+    }
+    g_dwatch_logged++;
+    const uintptr_t base = (uintptr_t)GetModuleHandleW(NULL);
+    unsigned long long callers[8] = {0};
+    {
+        CONTEXT c = *ctx;
+        for (unsigned f = 0; f < 8u; f++) {
+            DWORD64 image = 0;
+            PRUNTIME_FUNCTION fn = RtlLookupFunctionEntry(c.Rip, &image, NULL);
+            if (!fn) break;
+            PVOID handler_data;
+            DWORD64 establisher;
+            RtlVirtualUnwind(UNW_FLAG_NHANDLER, image, c.Rip, fn, &c, &handler_data, &establisher, NULL);
+            if (!c.Rip) break;
+            callers[f] = (unsigned long long)(c.Rip - base);
+        }
+    }
+    uint32_t gs[6] = {0};
+    unsigned ng = 0;
+    for (uint32_t a = g_esp; a < g_esp + 0x200u && ng < 6u; a += 4u) {
+        const uint32_t w = guest_u32(a);
+        if (w >= 0x00011000u && w < 0x002DC000u) gs[ng++] = w;   /* looks like guest code */
+    }
+    xbox_preview_log_event("guest-guard",
+        "write watch hit: %08X now %08X, by native rva %llX on thread %lu (guest function %08X; eax %08X ecx %08X "
+        "edx %08X ebx %08X esi %08X edi %08X esp %08X); native callers %llX %llX %llX %llX %llX %llX %llX %llX; "
+        "guest code on its stack %08X %08X %08X %08X %08X %08X",
+        g_dwatch_guest[which], guest_u32(g_dwatch_guest[which]),
+        (unsigned long long)((uintptr_t)r->ExceptionAddress - base), GetCurrentThreadId(),
+        (uint32_t)g_recomp_current_func, g_eax, g_ecx, g_edx, g_ebx, g_esi, g_edi, g_esp,
+        callers[0], callers[1], callers[2], callers[3], callers[4], callers[5], callers[6], callers[7],
+        gs[0], gs[1], gs[2], gs[3], gs[4], gs[5]);
+    return EXCEPTION_CONTINUE_EXECUTION;
+}
+
+static void recomp_dwatch_start(void)
+{
+    static LONG started;
+    char path[MAX_PATH], text[160], root[MAX_PATH];
+    if (InterlockedExchange(&started, 1)) return;
+    DWORD n = GetModuleFileNameA(NULL, path, sizeof(path));
+    char *slash = n && n < sizeof(path) ? strrchr(path, '\\') : NULL;
+    if (!slash) return;
+    slash[1] = 0;
+    if (strcat_s(path, sizeof(path), "developer.ini")) return;
+    DWORD length = GetEnvironmentVariableA("MERCENARIES_CONFIG_ROOT", root, MAX_PATH);
+    if (length && length + sizeof("\\developer.ini") <= MAX_PATH) snprintf(path, sizeof(path), "%s\\developer.ini", root);
+    if (!GetPrivateProfileStringA("Developer", "watch_write", "", text, sizeof(text), path) || !text[0]) {
+        const char *env = getenv("MERCENARIES_WATCH_WRITE");
+        if (!env) return;
+        snprintf(text, sizeof(text), "%s", env);
+    }
+    for (char *tok = strtok(text, ", "); tok && g_dwatch_count < DWATCH_MAX; tok = strtok(NULL, ", ")) {
+        const unsigned long v = strtoul(tok, NULL, 16);
+        if (v >= 0x10000u && v < 0x04000000u && !(v & 3u)) g_dwatch_guest[g_dwatch_count++] = (uint32_t)v;
+    }
+    if (!g_dwatch_count || !AddVectoredExceptionHandler(1, recomp_dwatch_handler)) return;
+    HANDLE t = CreateThread(NULL, 0, recomp_dwatch_thread, NULL, 0, NULL);
+    if (t) CloseHandle(t);
+    xbox_preview_log_event("guest-guard", "write watch (hardware) on %u address(es), the first %08X", g_dwatch_count,
+                           g_dwatch_guest[0]);
+}
+
 static void recomp_watch_arm(void);
 static void recomp_watch_write_table(const uint32_t *words);
 
 int recomp_guard_quat_from_matrix(uint32_t out, uint32_t matrix)
 {
     recomp_watch_arm();                  /* once: catch whoever overwrites the table */
+    recomp_dwatch_start();               /* once: developer.ini watch_write */
     /* Its next-axis table {1, 2, 0} at 0x30F048 is static data; the 0.222
      * playtest crashed here with valid pointers and that table overwritten
      * (an index of FF3E03FE). Put it back and say so: whatever scribbles on
