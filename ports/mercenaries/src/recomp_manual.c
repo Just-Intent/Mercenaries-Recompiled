@@ -21133,6 +21133,53 @@ int recomp_reward_skip(uint32_t entry)
     return 1;
 }
 
+/* AIs that take no grudge (0.339). Shooting at an AI (or its vehicle) gives
+ * the shooter a place in its enemy list through Ai_AddEnemy (0x65250, from
+ * the stimulus handler 0x69D90's shot case, and from hijacks and its own
+ * stimuli), and the target picked from that list pulled Gaza's traffic drones
+ * off their loops at whoever shot them; no template property stops it (the
+ * civilian AI passes shots to the base handler too). An AI whose owner's
+ * template (its Name, as retail's serialization finds it: Actor +8 -> record
+ * +4 -> property tables, 0x8D39BDE6) is in the list at 0x87B000 (count, then
+ * up to 15 name hashes; Foundry Console's Foundry_IgnoreAttacks fills it,
+ * each load clears it) adds no enemy. */
+static uint32_t recomp_actor_template_name(uint32_t actor)
+{
+    if (actor < 0x10000u || actor >= 0x04000000u) return 0;
+    const uint32_t record = guest_u32(actor + 8u);
+    if (record < 0x10000u || record >= 0x04000000u) return 0;
+    uint32_t props = guest_u32(record + 4u);
+    for (unsigned depth = 0; props >= 0x10000u && props < 0x04000000u && depth < 64u; depth++) {
+        int lo = 0, hi = (int)(int16_t)guest_u16(props + 4u) - 1;
+        const uint32_t entries = guest_u32(props + 8u);
+        if (entries < 0x10000u || entries >= 0x04000000u) return 0;
+        while (lo <= hi) {
+            const int mid = lo + (hi - lo) / 2;
+            const uint32_t key = guest_u32(entries + 8u * (uint32_t)mid);
+            if (key == 0x8D39BDE6u) return guest_u32(entries + 8u * (uint32_t)mid + 4u);
+            if (key < 0x8D39BDE6u) lo = mid + 1; else hi = mid - 1;
+        }
+        props = guest_u32(props);
+    }
+    return 0;
+}
+
+int recomp_ai_ignores_attacks(uint32_t ai)
+{
+    const uint32_t n = guest_u32(0x87B000u);
+    if (!n || n > 15u || ai < 0x10000u || ai >= 0x04000000u) return 0;
+    const uint32_t name = recomp_actor_template_name(guest_u32(ai + 0x10u));
+    if (!name) return 0;
+    for (uint32_t i = 0; i < n; i++)
+        if (guest_u32(0x87B004u + 4u * i) == name) {
+            static unsigned logged;
+            if (logged++ < 8u)
+                xbox_preview_log_event("guest-guard", "ai: %08X (template %08X) takes no grudge: Ai_AddEnemy skipped", ai, name);
+            return 1;
+        }
+    return 0;
+}
+
 /* developer.ini [Developer], beside the exe or in MERCENARIES_CONFIG_ROOT */
 static void recomp_dev_ini_path(char *path, size_t size)
 {
