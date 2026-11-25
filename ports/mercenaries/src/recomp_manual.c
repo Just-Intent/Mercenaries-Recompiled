@@ -20696,11 +20696,13 @@ static void recomp_bin_push(uint32_t bin, uint32_t block)
 }
 
 /* 1: the free is handled here (queued, or refused); 0: as retail */
+static uint32_t g_sb_wait;                 /* developer.ini small_block_wait (below) */
 static int recomp_binq_free(uint32_t bin, uint32_t block)
 {
     static unsigned logged;
     const unsigned b = (bin - 0x643928u) / 32u;
     if (b >= BINQ_BINS) return 0;
+    if (!g_sb_wait) return 0;                 /* 0.327: small_block_wait=0, no wait in retail's either (0.315's reuse) */
     if (!g_binq[b] && !(g_binq[b] = (BinQ *)calloc(BINQ_LEN, sizeof(BinQ)))) return 0;
     BinQ *q = g_binq[b];
     if (g_binq_n[b] == BINQ_LEN) {
@@ -20837,9 +20839,9 @@ static int recomp_d3d_ptr_ok(uint32_t p)
 void recomp_d3d_device_check(uint32_t dev)
 {
     static unsigned logged;
-    static const uint32_t slots[6] = {0x1A04u, 0x1A08u, 0xF88u, 0xF8Cu, 0xF90u, 0xF94u};
+    static const uint32_t slots[9] = {0x1A04u, 0x1A08u, 0xF88u, 0xF8Cu, 0xF90u, 0xF94u, 0x1A14u, 0x1A18u, 0x1A1Cu};
     if (dev < 0x00010000u || dev >= 0x04000000u - D3D_DEV_BYTES) return;
-    for (unsigned k = 0; k < 6u; k++) {
+    for (unsigned k = 0; k < 9u; k++) {
         const uint32_t now = guest_u32(dev + slots[k]);
         if (recomp_d3d_ptr_ok(now)) continue;
         const uint32_t was = g_d3d_dev_have ? g_d3d_dev_prev[slots[k] / 4u] : 0u;
@@ -20880,7 +20882,7 @@ static DWORD WINAPI recomp_d3d_sampler(LPVOID unused)
 {
     (void)unused;
     static uint32_t prev[D3D_DEV_BYTES / 4u], cur[D3D_DEV_BYTES / 4u];
-    static const uint32_t slots[6] = {0x1A04u, 0x1A08u, 0xF88u, 0xF8Cu, 0xF90u, 0xF94u};
+    static const uint32_t slots[9] = {0x1A04u, 0x1A08u, 0xF88u, 0xF8Cu, 0xF90u, 0xF94u, 0x1A14u, 0x1A18u, 0x1A1Cu};
     uint32_t have_dev = 0;
     unsigned logged = 0;
     unsigned tick = 0;
@@ -20892,17 +20894,17 @@ static DWORD WINAPI recomp_d3d_sampler(LPVOID unused)
         memcpy(cur, (const void *)guest_ptr(dev), D3D_DEV_BYTES);
         if (have_dev != dev) { memcpy(prev, cur, sizeof(prev)); have_dev = dev; continue; }
         for (uint32_t i = 0; i < D3D_DEV_BYTES / 4u; i++) {
-            if (cur[i] == prev[i] || cur[i] != 0xFFFFFFFFu || logged >= 32u) continue;
+            if (cur[i] == prev[i] || (cur[i] >> 16) != 0xFFFFu || logged >= 32u) continue;
             logged++;
             const uint32_t end = g_recomp_recent_game_func_idx;
             uint32_t r[8];
             for (unsigned k = 0; k < 8u; k++) r[k] = k < end ? g_recomp_recent_game_funcs[(end - 1u - k) & 255u] : 0u;
             xbox_preview_log_event("guest-guard",
-                "d3d device watch: +%X became FFFFFFFF (was %08X) within the last ms; the game thread was in guest "
+                "d3d device watch: +%X became %08X (was %08X) within the last ms; the game thread was in guest "
                 "function %08X; last game functions %08X %08X %08X %08X %08X %08X %08X %08X",
-                4u * i, prev[i], (uint32_t)g_recomp_current_func, r[0], r[1], r[2], r[3], r[4], r[5], r[6], r[7]);
+                4u * i, cur[i], prev[i], (uint32_t)g_recomp_current_func, r[0], r[1], r[2], r[3], r[4], r[5], r[6], r[7]);
         }
-        for (unsigned k = 0; k < 6u; k++) {
+        for (unsigned k = 0; k < 9u; k++) {
             const uint32_t i = slots[k] / 4u;
             if (recomp_d3d_ptr_ok(cur[i]) || !recomp_d3d_ptr_ok(prev[i])) continue;
             *(volatile uint32_t *)guest_ptr(dev + slots[k]) = prev[i];
@@ -21060,7 +21062,8 @@ int recomp_sb_on(void)
         g_sb_wait = w < 0 ? 0u : w > 64 ? 64u : (uint32_t)w;
         xbox_preview_log_event("guest-guard", "small blocks: %s%s%u%s", g_sb_mode ? "the port's allocator" : "retail's allocator (developer.ini)",
                                g_sb_mode ? ", " : "", g_sb_mode ? g_sb_wait : 0u, g_sb_mode ? " freed blocks wait before reuse" : "");
-        if (!g_sb_mode) xbox_preview_log_event("guest-guard", "small blocks: (retail's chain checks of 0.313-0.316 apply)");
+        if (!g_sb_mode) xbox_preview_log_event("guest-guard", "small blocks: (retail's chain checks of 0.313-0.315 apply; 0.316's wait %s)",
+                                               g_sb_wait ? "on" : "off: small_block_wait=0");
     }
     return g_sb_mode;
 }
