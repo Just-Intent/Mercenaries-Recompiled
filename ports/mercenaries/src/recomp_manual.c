@@ -21114,6 +21114,25 @@ void recomp_notice_shown(uint32_t pda, int32_t index)
                            index < 0 ? ": not shown" : "");
 }
 
+/* The engine's contract reward (0x15CB20: money, a shop item, a cheat,
+ * another unlock, a mail) skipped on a map with its own store (0.334). A
+ * map's contract filling a retail faction's slot (Gaza's Settlers, the
+ * Mafia's) raises that faction's contract counter, and the reward table
+ * then gave retail's next reward there: deliverStolenCivCar after Gaza's
+ * first Settlers contract, hidden on Gaza, with a blank popup. The map's
+ * store list (0x87BF80, Foundry_MapShop) says a map store is on. */
+int recomp_reward_skip(uint32_t entry)
+{
+    const uint32_t n = guest_u32(0x87BF80u);
+    if (!n || n > 31u) return 0;
+    static unsigned logged;
+    if (logged++ < 8u)
+        xbox_preview_log_event("pda-shop", "contract reward skipped on a map with its own store: money %d, item %08X, cheat %u, "
+                               "unlock %08X/%08X, mail %08X", (int32_t)guest_u32(entry), guest_u32(entry + 4u),
+                               guest_u32(entry + 8u), guest_u32(entry + 0xCu), guest_u32(entry + 0x10u), guest_u32(entry + 0x14u));
+    return 1;
+}
+
 /* developer.ini [Developer], beside the exe or in MERCENARIES_CONFIG_ROOT */
 static void recomp_dev_ini_path(char *path, size_t size)
 {
