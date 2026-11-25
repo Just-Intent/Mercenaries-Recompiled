@@ -20793,6 +20793,171 @@ void recomp_shop_page(uint32_t shop, uint32_t page, uint32_t has_items)
         guest_u32(shop + 0x179Cu), guest_u32(shop + 0x17A0u), recomp_mod_pda_has_available_supplier(shop));
 }
 
+/* The small-block allocator's bookkeeping, kept in the port (0.318). The
+ * game's small blocks come from bins (0x643928, 32 bytes each: +0 the page,
+ * +4 its end, +8 the free list's head, +0xC the block size, +0x10 the page's
+ * blocks, +0x14 how many are free, +0x18 the fewest ever free, +0x1C a flag;
+ * 0x64592C of them, up to 256), and retail chains a bin's free blocks through
+ * their own first words. So any write into a freed block (the game does:
+ * a container freed still linked, a script record freed twice; Gaza's
+ * playtests) rewrote the chain, and the bin later handed out memory in use or
+ * no memory at all: broken object lists, garbled scripts, hangs on loading.
+ * Here the port keeps each bin's blocks itself, outside guest memory: which
+ * are free, in use, or waiting; a free stack; a queue of the last ones freed
+ * (up to 64, a quarter of the page) that waits before reuse, so a late write
+ * lands in memory nobody has (it's logged when the block leaves the queue).
+ * A second free, or a free of something that isn't one of the bin's blocks,
+ * is logged and ignored. Nothing in a block is read or written by the
+ * bookkeeping. The bin's own fields are kept as the rest of the game reads
+ * them (+0x14 the blocks that can be handed out now, +8 non-zero while there
+ * are any, +0x18 the low mark). A page is never given back to the main heap
+ * (0x1F6A60 isn't called). Replaces 0x1F6BC0 (a bin's set-up), 0x1F66C0
+ * (take a block) and 0x1F6AB0 (give one back). */
+enum { SB_USED = 0, SB_FREE = 1, SB_WAITING = 2 };
+typedef struct {
+    uint32_t start, size, n, top, qcap, qat, qn;
+    uint8_t *state;
+    uint32_t *stack, *queue, (*snap)[8];
+} SbBin;
+#define SB_SLOTS 1024u
+static SbBin g_sb[SB_SLOTS];
+static SRWLOCK g_sb_lock = SRWLOCK_INIT;
+static unsigned g_sb_logs;
+
+static SbBin *recomp_sb_find(uint32_t start, int make)
+{
+    uint32_t h = (uint32_t)((start >> 4) * 2654435761u) % SB_SLOTS;
+    for (unsigned i = 0; i < SB_SLOTS; i++, h = (h + 1u) % SB_SLOTS) {
+        if (g_sb[h].start == start && g_sb[h].n) return &g_sb[h];
+        if (!g_sb[h].n) {
+            if (!make) return NULL;
+            g_sb[h].start = start;
+            return &g_sb[h];
+        }
+    }
+    return NULL;
+}
+
+static void recomp_sb_fields(uint32_t bin, const SbBin *e)
+{
+    *(volatile uint32_t *)guest_ptr(bin + 0x14u) = e->top;
+    *(volatile uint32_t *)guest_ptr(bin + 8u) = e->top ? e->start : 0u;
+    if (guest_u32(bin + 0x18u) > e->top)
+        *(volatile uint32_t *)guest_ptr(bin + 0x18u) = e->top;
+}
+
+void recomp_sb_init(uint32_t bin, uint32_t start, uint32_t bytes, uint32_t size)
+{
+    const uint32_t n = size ? bytes / size : 0u;
+    AcquireSRWLockExclusive(&g_sb_lock);
+    *(volatile uint32_t *)guest_ptr(bin) = start;
+    *(volatile uint32_t *)guest_ptr(bin + 4u) = start + bytes;
+    *(volatile uint32_t *)guest_ptr(bin + 0xCu) = size;
+    *(volatile uint32_t *)guest_ptr(bin + 0x10u) = n;
+    *(volatile uint32_t *)guest_ptr(bin + 0x18u) = n;
+    SbBin *e = n ? recomp_sb_find(start, 1) : NULL;
+    if (e) {
+        free(e->state); free(e->stack); free(e->queue); free(e->snap);
+        e->state = (uint8_t *)malloc(n);
+        e->stack = (uint32_t *)malloc(4u * n);
+        e->qcap = n >= 8u ? (n / 4u < 64u ? n / 4u : 64u) : 0u;
+        e->queue = e->qcap ? (uint32_t *)malloc(4u * e->qcap) : NULL;
+        e->snap = e->qcap ? (uint32_t (*)[8])malloc(32u * e->qcap) : NULL;
+        if (!e->state || !e->stack || (e->qcap && (!e->queue || !e->snap))) {
+            e->n = 0u;
+        } else {
+            e->size = size;
+            e->n = n;
+            for (uint32_t i = 0; i < n; i++) { e->state[i] = SB_FREE; e->stack[i] = n - 1u - i; }
+            e->top = n;                  /* the page's first block is taken first */
+            e->qat = e->qn = 0u;
+        }
+    }
+    if (e && e->n)
+        recomp_sb_fields(bin, e);
+    else {
+        *(volatile uint32_t *)guest_ptr(bin + 0x14u) = 0u;
+        *(volatile uint32_t *)guest_ptr(bin + 8u) = 0u;
+    }
+    ReleaseSRWLockExclusive(&g_sb_lock);
+}
+
+uint32_t recomp_sb_pop(uint32_t bin)
+{
+    uint32_t got = 0u;
+    AcquireSRWLockExclusive(&g_sb_lock);
+    SbBin *e = recomp_sb_find(guest_u32(bin), 0);
+    if (e && e->top) {
+        const uint32_t i = e->stack[--e->top];
+        e->state[i] = SB_USED;
+        got = e->start + i * e->size;
+        recomp_sb_fields(bin, e);
+    } else if (!e) {
+        *(volatile uint32_t *)guest_ptr(bin + 0x14u) = 0u;   /* a bin it doesn't know: nothing from it */
+        *(volatile uint32_t *)guest_ptr(bin + 8u) = 0u;
+    }
+    ReleaseSRWLockExclusive(&g_sb_lock);
+    return got;
+}
+
+void recomp_sb_push(uint32_t bin, uint32_t block)
+{
+    char why[160];
+    why[0] = 0;
+    AcquireSRWLockExclusive(&g_sb_lock);
+    SbBin *e = recomp_sb_find(guest_u32(bin), 0);
+    const uint32_t off = e ? block - e->start : 0u, i = e && e->size ? off / e->size : 0u;
+    if (!e)
+        snprintf(why, sizeof(why), "a bin the port doesn't know (page %08X)", guest_u32(bin));
+    else if (block < e->start || i >= e->n || off % e->size)
+        snprintf(why, sizeof(why), "not one of its blocks (page %08X, %u of %u bytes)", e->start, e->n, e->size);
+    else if (e->state[i] != SB_USED)
+        snprintf(why, sizeof(why), "free already (a second free)%s", e->state[i] == SB_WAITING ? ", waiting to be reused" : "");
+    if (why[0]) {
+        if (g_sb_logs < 24u) {
+            g_sb_logs++;
+            xbox_preview_log_event("guest-guard", "small blocks: freeing %08X (%u-byte blocks), %s; ignored (guest function %08X)",
+                                   block, guest_u32(bin + 0xCu), why, (uint32_t)g_recomp_current_func);
+        }
+        ReleaseSRWLockExclusive(&g_sb_lock);
+        return;
+    }
+    {
+        void merc_plugins_guest_freed(uint32_t, uint32_t);
+        merc_plugins_guest_freed(block, e->size);
+    }
+    if (e->qcap) {
+        if (e->qn == e->qcap) {           /* the oldest waiting goes back to be reused */
+            const uint32_t j = e->queue[e->qat], at = e->start + j * e->size;
+            int changed = 0;
+            for (unsigned k = 0; k < 8u && 4u * k < e->size; k++) changed |= guest_u32(at + 4u * k) != e->snap[e->qat][k];
+            if (changed && g_sb_logs < 24u) {
+                g_sb_logs++;
+                xbox_preview_log_event("guest-guard",
+                    "small blocks: %08X (%u-byte blocks) was written after its free (first words were %08X %08X %08X "
+                    "%08X, now %08X %08X %08X %08X); kept from reuse until now, so nothing was hurt",
+                    at, e->size, e->snap[e->qat][0], e->snap[e->qat][1], e->snap[e->qat][2], e->snap[e->qat][3],
+                    guest_u32(at), guest_u32(at + 4u), e->size > 8u ? guest_u32(at + 8u) : 0u,
+                    e->size > 12u ? guest_u32(at + 12u) : 0u);
+            }
+            e->state[j] = SB_FREE;
+            e->stack[e->top++] = j;
+            e->qat = (e->qat + 1u) % e->qcap;
+            e->qn--;
+        }
+        const uint32_t slot = (e->qat + e->qn) % e->qcap;
+        e->queue[slot] = i;
+        for (unsigned k = 0; k < 8u; k++) e->snap[slot][k] = 4u * k < e->size ? guest_u32(block + 4u * k) : 0u;
+        e->qn++;
+        e->state[i] = SB_WAITING;
+    } else {
+        e->state[i] = SB_FREE;
+        e->stack[e->top++] = i;
+    }
+    recomp_sb_fields(bin, e);
+    ReleaseSRWLockExclusive(&g_sb_lock);
+}
+
 #define RECOMP_STRIKE_REACT_M 100.0f
 uint32_t g_recomp_strike_obj;
 int recomp_strike_far(uint32_t human)
