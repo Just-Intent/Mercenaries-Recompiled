@@ -20601,6 +20601,53 @@ int recomp_small_alloc_failed(uint32_t size)
     return 1;
 }
 
+/* A small-block bin's free list checked as a block is taken (0.313). Gaza's
+ * level-load stops: the pool's links held AE2BEC37 because the 0x200-byte
+ * bin handed out AE2BEA5B as a block (+0x1DC of it is AE2BEC37): a freed
+ * block's first word, its link to the next free one, had been overwritten,
+ * and the bad link was popped as an allocation, whose writes then landed
+ * wherever that address folds into guest memory (scripts' text garbled at
+ * the next load). A bin (0x643928, 32 bytes each: +0 its page, +4 the page's
+ * end, +8 the free list, +0xC the block size, +0x14 free count) only ever
+ * links blocks of its own page, on block boundaries. 0x1F66C0 pops the head
+ * and takes its link as the new head: a head that isn't one of the bin's
+ * blocks empties the bin (0 is returned: the allocation goes elsewhere, the
+ * main heap at worst, 0.300), and a link that isn't is cut (the block is
+ * handed out, the bin left empty after it). Each is logged with the block
+ * and what's in it: the block's address is where to watch the next run. */
+static int recomp_bin_block_ok(uint32_t bin, uint32_t p)
+{
+    const uint32_t lo = guest_u32(bin), hi = guest_u32(bin + 4u), size = guest_u32(bin + 0xCu);
+    return p >= lo && p < hi && size && ((p - lo) % size) == 0u;
+}
+
+uint32_t recomp_bin_pop(uint32_t bin, uint32_t head)
+{
+    static unsigned logged;
+    const int head_ok = recomp_bin_block_ok(bin, head);
+    const uint32_t next = head_ok ? guest_u32(head) : 0u;
+    if (head_ok && (!next || recomp_bin_block_ok(bin, next)))
+        return head;
+    if (logged < 8u) {
+        uint32_t w[16] = {0};
+        logged++;
+        if (head_ok)
+            for (unsigned i = 0; i < 16u; i++) w[i] = guest_u32(head + 4u * i);
+        xbox_preview_log_event("guest-guard",
+            "small-block bin %u (%u-byte blocks, page %08X-%08X): %s %08X%s%08X; first words %08X %08X %08X %08X "
+            "%08X %08X %08X %08X; cut off (taken by guest function %08X)",
+            (bin - 0x643928u) / 32u, guest_u32(bin + 0xCu), guest_u32(bin), guest_u32(bin + 4u),
+            head_ok ? "free block" : "free list head", head, head_ok ? "'s link to the next is " : " isn't a block of it; ",
+            head_ok ? next : 0u, w[0], w[1], w[2], w[3], w[4], w[5], w[6], w[7], (uint32_t)g_recomp_current_func);
+    }
+    if (!head_ok) {
+        *(volatile uint32_t *)guest_ptr(bin + 8u) = 0u;   /* the bin empty: the allocation goes elsewhere */
+        return 0u;
+    }
+    *(volatile uint32_t *)guest_ptr(head) = 0u;           /* handed out; the bin empty after it */
+    return head;
+}
+
 #define RECOMP_STRIKE_REACT_M 100.0f
 uint32_t g_recomp_strike_obj;
 int recomp_strike_far(uint32_t human)
