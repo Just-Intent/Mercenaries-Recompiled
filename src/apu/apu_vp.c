@@ -243,9 +243,26 @@ static void set_notify_status(MCPXAPUState *d, uint32_t v, int notifier,
  * Filter helpers
  * ============================================================ */
 
+/* A voice handle past the voice table (foundry 0.328). The game's voice
+ * lists and methods carry 16-bit handles; one of 256 or more (a corrupted
+ * list link, a stale handle) made every voice read and write land at
+ * VPVADDR + handle * 0x80, up to 8 MB past the table, wrapped into guest RAM
+ * (D3D's static device was hit, Gaza's SW crashes 0.318-0.327), and past the
+ * end of the emulator's own per-voice tables (the crash in voice_process,
+ * 0.327). Nothing is read or written for such a handle; the first are
+ * logged. */
+void xbox_preview_log_event(const char *category, const char *format, ...);
+static void apu_bad_voice(uint32_t handle, const char *where, uint32_t extra)
+{
+    static volatile LONG logged;
+    if (InterlockedIncrement(&logged) <= 24)
+        xbox_preview_log_event("audio-guard", "voice handle %u (of %u) in %s (%08X): nothing read or written for it",
+                               handle, (unsigned)MCPX_HW_MAX_VOICES, where, extra);
+}
+
 static void voice_reset_filters(MCPXAPUState *d, uint16_t v)
 {
-    assert(v < MCPX_HW_MAX_VOICES);
+    if (v >= MCPX_HW_MAX_VOICES) { apu_bad_voice(v, "voice_reset_filters", 0); return; }
     memset(&d->vp.filters[v].svf, 0, sizeof(d->vp.filters[v].svf));
     hrtf_filter_clear_history(&d->vp.filters[v].hrtf);
     if (d->vp.filters[v].resampler) {
@@ -283,6 +300,7 @@ static float attenuate(uint16_t vol)
 static uint32_t voice_get_mask(MCPXAPUState *d, uint16_t voice_handle,
                                hwaddr offset, uint32_t mask)
 {
+    if (voice_handle >= MCPX_HW_MAX_VOICES) { apu_bad_voice(voice_handle, "a voice read", (uint32_t)offset); return 0; }
     hwaddr voice = d->regs[NV_PAPU_VPVADDR] + voice_handle * NV_PAVS_SIZE;
     return (ldl_le_phys(address_space_memory, voice + offset) & mask) >>
            ctz32(mask);
@@ -378,6 +396,7 @@ void mcpx_apu_debug_dump_stream_voices(void)
 static void voice_set_mask(MCPXAPUState *d, uint16_t voice_handle,
                            hwaddr offset, uint32_t mask, uint32_t val)
 {
+    if (voice_handle >= MCPX_HW_MAX_VOICES) { apu_bad_voice(voice_handle, "a voice write", (uint32_t)offset); return; }
     hwaddr voice = d->regs[NV_PAPU_VPVADDR] + voice_handle * NV_PAVS_SIZE;
     uint32_t v = ldl_le_phys(address_space_memory, voice + offset) & ~mask;
     stl_le_phys(address_space_memory, voice + offset,
@@ -416,7 +435,7 @@ static void voice_off(MCPXAPUState *d, uint16_t v)
                                  NV_PAVS_VOICE_CFG_FMT_DATA_TYPE) != 0;
     int notifier = MCPX_HW_NOTIFIER_SSLA_DONE;
     if (stream) {
-        assert(v < MCPX_HW_MAX_VOICES);
+        if (v >= MCPX_HW_MAX_VOICES) { apu_bad_voice(v, "voice_off", 0); return; }
         assert(d->vp.ssl[v].ssl_index <= 1);
         notifier += d->vp.ssl[v].ssl_index;
     }
@@ -425,7 +444,7 @@ static void voice_off(MCPXAPUState *d, uint16_t v)
 
 static void voice_lock(MCPXAPUState *d, uint16_t v, bool lock)
 {
-    assert(v < MCPX_HW_MAX_VOICES);
+    if (v >= MCPX_HW_MAX_VOICES) { apu_bad_voice(v, "voice_lock", 0); return; }
     qemu_mutex_lock(&d->lock);
 
     uint64_t mask = 1ULL << (v % 64);
@@ -441,7 +460,7 @@ static void voice_lock(MCPXAPUState *d, uint16_t v, bool lock)
 
 static bool is_voice_locked(MCPXAPUState *d, uint16_t v)
 {
-    assert(v < MCPX_HW_MAX_VOICES);
+    if (v >= MCPX_HW_MAX_VOICES) { apu_bad_voice(v, "is_voice_locked", 0); return true; }
     uint64_t mask = 1ULL << (v % 64);
     return (qatomic_read(&d->vp.voice_locked[v / 64]) & mask) != 0;
 }
@@ -565,6 +584,7 @@ static void fe_method(MCPXAPUState *d, uint32_t method, uint32_t argument)
 
     case NV1BA0_PIO_VOICE_ON: {
         selected_handle = argument & NV1BA0_PIO_VOICE_ON_HANDLE;
+        if (selected_handle >= MCPX_HW_MAX_VOICES) { apu_bad_voice(selected_handle, "a voice method", method); break; }
 
         bool locked = is_voice_locked(d, (uint16_t)selected_handle);
         if (!locked) voice_lock(d, (uint16_t)selected_handle, true);
@@ -709,6 +729,7 @@ static void fe_method(MCPXAPUState *d, uint32_t method, uint32_t argument)
 
     case NV1BA0_PIO_VOICE_RELEASE: {
         selected_handle = argument & NV1BA0_PIO_VOICE_ON_HANDLE;
+        if (selected_handle >= MCPX_HW_MAX_VOICES) { apu_bad_voice(selected_handle, "a voice method", method); break; }
         trace_voice_envelope(d, (uint16_t)selected_handle, "release");
 
         bool locked = is_voice_locked(d, (uint16_t)selected_handle);
@@ -794,7 +815,7 @@ static void fe_method(MCPXAPUState *d, uint32_t method, uint32_t argument)
                        NV_PAVS_VOICE_CFG_HRTF_TARGET_HANDLE, handle);
         if (current_voice < MCPX_HW_MAX_3D_VOICES &&
             handle != HRTF_NULL_HANDLE) {
-            assert(handle < HRTF_ENTRY_COUNT);
+            if (handle >= HRTF_ENTRY_COUNT) break;   /* foundry 0.328: an HRTF entry past the table */
             hrtf_filter_set_target_params(&d->vp.filters[current_voice].hrtf,
                                           d->vp.hrtf.entries[handle].hrir,
                                           d->vp.hrtf.entries[handle].itd);
@@ -891,7 +912,7 @@ static void fe_method(MCPXAPUState *d, uint32_t method, uint32_t argument)
     case NV1BA0_PIO_SET_VOICE_SSL_A: {
         int ssl = 0;
         int current_voice = d->regs[NV_PAPU_FECV];
-        assert(current_voice < MCPX_HW_MAX_VOICES);
+        if (current_voice < 0 || current_voice >= MCPX_HW_MAX_VOICES) { apu_bad_voice((uint32_t)current_voice, "a voice SSL", method); break; }
         d->vp.ssl[current_voice].base[ssl] =
             GET_MASK(argument, NV1BA0_PIO_SET_VOICE_SSL_A_BASE);
         d->vp.ssl[current_voice].count[ssl] =
@@ -905,7 +926,7 @@ static void fe_method(MCPXAPUState *d, uint32_t method, uint32_t argument)
     case NV1BA0_PIO_SET_VOICE_SSL_B: {
         int ssl = 1;
         int current_voice = d->regs[NV_PAPU_FECV];
-        assert(current_voice < MCPX_HW_MAX_VOICES);
+        if (current_voice < 0 || current_voice >= MCPX_HW_MAX_VOICES) { apu_bad_voice((uint32_t)current_voice, "a voice SSL", method); break; }
         d->vp.ssl[current_voice].base[ssl] =
             GET_MASK(argument, NV1BA0_PIO_SET_VOICE_SSL_A_BASE);
         d->vp.ssl[current_voice].count[ssl] =
@@ -1631,7 +1652,7 @@ static void voice_process(MCPXAPUState *d,
                           float sample_buf[NUM_SAMPLES_PER_FRAME][2],
                           uint16_t v, int voice_list)
 {
-    assert(v < MCPX_HW_MAX_VOICES);
+    if (v >= MCPX_HW_MAX_VOICES) { apu_bad_voice(v, "voice_process", (uint32_t)voice_list); return; }
     bool stereo = voice_get_mask(d, v, NV_PAVS_VOICE_CFG_FMT,
                                  NV_PAVS_VOICE_CFG_FMT_STEREO) != 0;
     unsigned int channels = stereo ? 2 : 1;
@@ -2090,6 +2111,11 @@ void mcpx_apu_vp_frame(MCPXAPUState *d,
             }
 
             uint16_t v = (uint16_t)d->regs[current];
+            if (v >= MCPX_HW_MAX_VOICES) {           /* foundry 0.328: a list link past the table ends the list */
+                apu_bad_voice(v, "a voice list", (uint32_t)list);
+                d->regs[current] = 0xFFFF;
+                break;
+            }
             InterlockedExchange(&d->debug_worker_voice, v);
             InterlockedExchange(&d->debug_worker_stage, 20);
             ++frame_traversed;
