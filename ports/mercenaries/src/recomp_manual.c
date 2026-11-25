@@ -21099,6 +21099,21 @@ void recomp_d3d_sampler_start(void)
     }
 }
 
+/* The PDA's "new item" notice as it's shown (0.333): 0xC95C0 takes the
+ * last queued hash, finds it with 0xC8BF0 (-1: none, no popup) and builds
+ * the text from that entry. Gaza's blank popup came through 0.331's filter
+ * on the queue: its hash and what the lookup gave, to see whose it is. */
+void recomp_notice_shown(uint32_t pda, int32_t index)
+{
+    static unsigned logged;
+    if (logged >= 24u) return;
+    logged++;
+    const uint32_t n = guest_u32(pda + 0xE378u);
+    const uint32_t hash = n && n <= 8u ? guest_u32(pda + 0xE378u + 4u * n) : 0u;
+    xbox_preview_log_event("pda-shop", "new item notice: %08X (%u queued), the lookup gave %d%s", hash, n, index,
+                           index < 0 ? ": not shown" : "");
+}
+
 /* developer.ini [Developer], beside the exe or in MERCENARIES_CONFIG_ROOT */
 static void recomp_dev_ini_path(char *path, size_t size)
 {
