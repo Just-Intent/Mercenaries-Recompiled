@@ -21122,10 +21122,10 @@ int recomp_dev_ini_int(const char *key, int fallback)
 
 /* 0.319: developer.ini small_blocks=retail puts retail's allocator back (to
  * tell a fault of the port's from the game's), small_block_wait=N (0-64,
- * default 64) how many freed blocks wait before reuse; read once, at the
+ * default 0 since 0.330: a wait let a stale game write reach D3D's device) how many freed blocks wait before reuse; read once, at the
  * first bin's set-up, before any block is handed out. */
 static int g_sb_mode = -1;                 /* -1 not read, 0 retail, 1 the port's */
-static uint32_t g_sb_wait = 64u;
+static uint32_t g_sb_wait = 0u;
 int recomp_sb_on(void)
 {
     if (g_sb_mode < 0) {
@@ -21134,7 +21134,7 @@ int recomp_sb_on(void)
         recomp_dev_ini_path(path, sizeof(path));
         if (path[0]) GetPrivateProfileStringA("Developer", "small_blocks", "", text, sizeof(text), path);
         g_sb_mode = _stricmp(text, "retail") != 0;
-        int w = recomp_dev_ini_int("small_block_wait", 64);
+        int w = recomp_dev_ini_int("small_block_wait", 0);
         g_sb_wait = w < 0 ? 0u : w > 64 ? 64u : (uint32_t)w;
         xbox_preview_log_event("guest-guard", "small blocks: %s%s%u%s", g_sb_mode ? "the port's allocator" : "retail's allocator (developer.ini)",
                                g_sb_mode ? ", " : "", g_sb_mode ? g_sb_wait : 0u, g_sb_mode ? " freed blocks wait before reuse" : "");
