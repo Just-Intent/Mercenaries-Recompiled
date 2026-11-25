@@ -20878,6 +20878,80 @@ void recomp_d3d_device_check(uint32_t dev)
  * swap AddRefs (+0x1A04, +0x1A08, +0xF88..+0xF94) are put back at once when
  * one turns into something that isn't 0 or a guest address. */
 static void recomp_alias_guard_poll(void);
+
+/* 0.329: when a device pointer goes bad, what every thread of the game was
+ * doing at that moment, and every word of the device that changed in that
+ * millisecond (the hardware watch on +1A04's own address missed its change
+ * to 2 in 0.325: the writer isn't seen by it, so which thread it is has to be
+ * caught while it may still be at it). Each thread is stopped for a moment:
+ * its native rva (in the exe, for mercenaries_recomp.map) or a module's name,
+ * and three callers. Twice per run. */
+static void recomp_d3d_snapshot(const uint32_t *prev, const uint32_t *cur, uint32_t dev)
+{
+    static unsigned snaps;
+    if (snaps++ >= 2u) return;
+    char line[900];
+    int used = 0;
+    unsigned n = 0;
+    for (uint32_t i = 0; i < D3D_DEV_BYTES / 4u && used < (int)sizeof(line) - 40; i++)
+        if (cur[i] != prev[i]) {
+            n++;
+            used += snprintf(line + used, sizeof(line) - used, " +%X:%08X>%08X", 4u * i, prev[i], cur[i]);
+        }
+    xbox_preview_log_event("guest-guard", "d3d device snapshot: %u words of the device (%08X) changed in the last ms:%s", n, dev, line);
+    const uintptr_t base = (uintptr_t)GetModuleHandleW(NULL);
+    HANDLE snap = CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0);
+    if (snap == INVALID_HANDLE_VALUE) return;
+    THREADENTRY32 te;
+    te.dwSize = sizeof(te);
+    unsigned listed = 0;
+    for (BOOL ok = Thread32First(snap, &te); ok && listed < 40u; ok = Thread32Next(snap, &te)) {
+        if (te.th32OwnerProcessID != GetCurrentProcessId() || te.th32ThreadID == GetCurrentThreadId()) continue;
+        HANDLE t = OpenThread(THREAD_SUSPEND_RESUME | THREAD_GET_CONTEXT | THREAD_QUERY_INFORMATION, FALSE, te.th32ThreadID);
+        if (!t) continue;
+        CONTEXT c;
+        memset(&c, 0, sizeof(c));
+        c.ContextFlags = CONTEXT_CONTROL | CONTEXT_INTEGER;
+        unsigned long long rv[4] = {0};
+        char where[64] = "";
+        if (SuspendThread(t) != (DWORD)-1) {
+            if (GetThreadContext(t, &c)) {
+                CONTEXT u = c;
+                for (unsigned f = 0; f < 4u; f++) {
+                    if (u.Rip >= base && u.Rip < base + 0x10000000u) rv[f] = u.Rip - base;
+                    else if (f == 0) {
+                        HMODULE m = NULL;
+                        char mod[48] = "?";
+                        if (GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                                               (LPCSTR)(uintptr_t)u.Rip, &m) && m) {
+                            char full[MAX_PATH];
+                            if (GetModuleFileNameA(m, full, sizeof(full))) {
+                                const char *b = strrchr(full, '\\');
+                                snprintf(mod, sizeof(mod), "%s", b ? b + 1 : full);
+                            }
+                        }
+                        snprintf(where, sizeof(where), " in %s", mod);
+                    }
+                    DWORD64 image = 0;
+                    PRUNTIME_FUNCTION fn = RtlLookupFunctionEntry(u.Rip, &image, NULL);
+                    if (!fn) break;
+                    PVOID hd;
+                    DWORD64 est;
+                    RtlVirtualUnwind(UNW_FLAG_NHANDLER, image, u.Rip, fn, &u, &hd, &est, NULL);
+                    if (!u.Rip) break;
+                    if (f < 3u && u.Rip >= base && u.Rip < base + 0x10000000u && !rv[f + 1]) rv[f + 1] = u.Rip - base;
+                }
+            }
+            ResumeThread(t);
+        }
+        CloseHandle(t);
+        listed++;
+        xbox_preview_log_event("guest-guard", "d3d device snapshot: thread %lu at rva %llX%s; callers %llX %llX %llX",
+                               te.th32ThreadID, rv[0], where, rv[1], rv[2], rv[3]);
+    }
+    CloseHandle(snap);
+}
+
 static DWORD WINAPI recomp_d3d_sampler(LPVOID unused)
 {
     (void)unused;
@@ -20896,6 +20970,7 @@ static DWORD WINAPI recomp_d3d_sampler(LPVOID unused)
         for (uint32_t i = 0; i < D3D_DEV_BYTES / 4u; i++) {
             if (cur[i] == prev[i] || (cur[i] >> 16) != 0xFFFFu || logged >= 32u) continue;
             logged++;
+            if (4u * i == 0x128Cu) recomp_d3d_snapshot(prev, cur, dev);   /* 0.329: it goes with +1A04's */
             const uint32_t end = g_recomp_recent_game_func_idx;
             uint32_t r[8];
             for (unsigned k = 0; k < 8u; k++) r[k] = k < end ? g_recomp_recent_game_funcs[(end - 1u - k) & 255u] : 0u;
@@ -20907,6 +20982,7 @@ static DWORD WINAPI recomp_d3d_sampler(LPVOID unused)
         for (unsigned k = 0; k < 9u; k++) {
             const uint32_t i = slots[k] / 4u;
             if (recomp_d3d_ptr_ok(cur[i]) || !recomp_d3d_ptr_ok(prev[i])) continue;
+            recomp_d3d_snapshot(prev, cur, dev);   /* 0.329 */
             *(volatile uint32_t *)guest_ptr(dev + slots[k]) = prev[i];
             if (logged < 32u) {
                 logged++;
