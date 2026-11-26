@@ -20555,24 +20555,49 @@ void recomp_wheel_centre(uint32_t vehicle, uint32_t pos)
         if (s == nseen && nseen < 40u) {
             seen[nseen++] = vehicle;
             xbox_preview_log_event("guest-snapshot",
-                "wheel centre: vehicle %08X (vtable %08X) wheel model +1080 %08X, list of %u (first %08X): %s, a wheel at x %.2f",
+                "wheel centre: vehicle %08X (vtable %08X) wheel model +1080 %08X, list of %u (first %08X): %s, a wheel at world x %.2f",
                 vehicle, guest_u32(vehicle), model, n, guest_u32(RECOMP_CENTRE_WHEELS + 4u),
                 i < n ? "listed, set to 0" : "not listed", (double)x);
         }
     }
     if (i == n)
         return;
-    if (!(fabsf(x) < 4.0f)) {
-        if (logged < 4u) {
-            logged++;
-            fprintf(stderr, "[WHEEL-CENTRE] vehicle %08X: a wheel at x %.2f isn't in the vehicle's frame; left\n",
-                    vehicle, (double)x);
+    /* 0.366: esp+0x5C here is the wheel's place in the WORLD (0x22F9BC has
+     * turned it by the vehicle's matrix; 0.361's log showed x 2550 on Gaza's
+     * bikes), so 0.296-0.365 set a world x to 0 and nothing showed. The
+     * vehicle's matrix is at actor +0xB0 (its right axis; up +0xC0, forward
+     * +0xD0, place +0xE0): the wheel's sideways offset is (wheel - place) .
+     * right, and taking right x that off puts the tyre on the centre line. */
+    {
+        float w[3], r[3], o[3], d, rr;
+        unsigned k;
+        if (!recomp_guard_guest_span(vehicle + 0xB0u, 0x40u) || !recomp_guard_guest_span(pos, 12u))
+            return;
+        for (k = 0; k < 3u; k++) {
+            uint32_t b = guest_u32(pos + 4u * k);
+            memcpy(&w[k], &b, 4);
+            b = guest_u32(vehicle + 0xB0u + 4u * k); memcpy(&r[k], &b, 4);
+            b = guest_u32(vehicle + 0xE0u + 4u * k); memcpy(&o[k], &b, 4);
         }
-        return;
+        rr = r[0] * r[0] + r[1] * r[1] + r[2] * r[2];
+        if (!(rr > 0.25f && rr < 4.0f))
+            return;
+        d = ((w[0] - o[0]) * r[0] + (w[1] - o[1]) * r[1] + (w[2] - o[2]) * r[2]) / rr;
+        if (!(fabsf(d) < 4.0f)) {
+            if (logged < 4u) {
+                logged++;
+                fprintf(stderr, "[WHEEL-CENTRE] vehicle %08X: a wheel %.2f m to the side; left\n", vehicle, (double)d);
+            }
+            return;
+        }
+        for (k = 0; k < 3u; k++) {
+            float v = w[k] - r[k] * d;
+            uint32_t b;
+            memcpy(&b, &v, 4);
+            *(volatile uint32_t *)guest_ptr(pos + 4u * k) = b;
+        }
+        (void)x; (void)u;
     }
-    x = 0.0f;
-    memcpy(&u, &x, 4);
-    *(volatile uint32_t *)guest_ptr(pos) = u;
 }
 
 /* The loading picture's wait (0.297): Level_Load shows a loading picture
