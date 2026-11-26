@@ -21203,6 +21203,29 @@ static uint32_t recomp_actor_template_name(uint32_t actor)
     return 0;
 }
 
+/* 0.348: XACT's sound-bank release (0027EFF0) walks the engine's list at
+ * engine+0x4C and clears each entry's state. Twice (0.302 and 0.347, both
+ * when a streamed bank was dropped) a link in that list was FFFFFFFF and the
+ * walk read guest FFFFFFFF and crashed. The same FFFFFFFF stomp hits the D3D
+ * device. A bad link now ends the walk (the rest of the entries keep their
+ * state) and the list is closed at the last good entry, so no other walk
+ * follows it either. Logged under guest-snapshot. */
+int recomp_xact_list_next_ok(uint32_t next, uint32_t head, uint32_t prev_entry)
+{
+    static unsigned said;
+    if (next == head || (next >= 0x00010000u && next < 0x04000000u && !(next & 3u)))
+        return 1;
+    if (said++ < 20u)
+        xbox_preview_log_event("guest-snapshot",
+            "xact bank release: bad link %08X after entry %08X in the engine list %08X; walk ended, list closed there",
+            next, prev_entry, head);
+    if (prev_entry >= 0x00010000u && prev_entry < 0x04000000u && !(prev_entry & 3u)) {
+        *(volatile uint32_t *)guest_ptr(prev_entry + 0xCu) = head;   /* the entry's link (entry+0xC) */
+        *(volatile uint32_t *)guest_ptr(head + 4u) = prev_entry + 0xCu;   /* the list's tail */
+    }
+    return 0;
+}
+
 int recomp_ai_ignores_attacks(uint32_t ai)
 {
     const uint32_t n = guest_u32(0x87B000u);
