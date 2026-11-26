@@ -20542,10 +20542,26 @@ void recomp_wheel_centre(uint32_t vehicle, uint32_t pos)
     model = guest_u32(vehicle + 0x1080u);
     for (i = 0; i < n && guest_u32(RECOMP_CENTRE_WHEELS + 4u + 4u * i) != model; i++)
         ;
-    if (i == n)
-        return;
     u = guest_u32(pos);
     memcpy(&x, &u, 4);
+    {
+        /* 0.361: once per vehicle (the first 40), what the check saw: Gaza's
+         * bike still draws two tyres an axle with its wheel model listed */
+        static uint32_t seen[40];
+        static unsigned nseen;
+        unsigned s;
+        for (s = 0; s < nseen && seen[s] != vehicle; s++)
+            ;
+        if (s == nseen && nseen < 40u) {
+            seen[nseen++] = vehicle;
+            xbox_preview_log_event("guest-snapshot",
+                "wheel centre: vehicle %08X (vtable %08X) wheel model +1080 %08X, list of %u (first %08X): %s, a wheel at x %.2f",
+                vehicle, guest_u32(vehicle), model, n, guest_u32(RECOMP_CENTRE_WHEELS + 4u),
+                i < n ? "listed, set to 0" : "not listed", (double)x);
+        }
+    }
+    if (i == n)
+        return;
     if (!(fabsf(x) < 4.0f)) {
         if (logged < 4u) {
             logged++;
