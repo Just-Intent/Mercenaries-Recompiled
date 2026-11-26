@@ -11699,12 +11699,15 @@ void recomp_bullet_hit_checkpoint(uint32_t stage, uint32_t projectile,
         const uint32_t wo = actor ? guest_u32(actor + 8u) : 0u;
         xbox_preview_log_event("guest-snapshot",
             "bullet hit %u: stage %u projectile %08X actor %08X (vtable %08X) value %08X at (%.2f, %.2f, %.2f), "
-            "actor at (%.2f, %.2f, %.2f), damage %g/%g/%g type %08X",
+            "actor at (%.2f, %.2f, %.2f), damage %g/%g/%g type %08X, ray (%.2f, %.2f, %.2f) to (%.2f, %.2f, %.2f)",
             samples, stage, projectile, actor, actor ? guest_u32(actor) : 0u, value,
             guest_f32(projectile + 0xE0u), guest_f32(projectile + 0xE4u), guest_f32(projectile + 0xE8u),
             actor ? guest_f32(actor + 0xE0u) : 0.0f, actor ? guest_f32(actor + 0xE4u) : 0.0f,
             actor ? guest_f32(actor + 0xE8u) : 0.0f, guest_f32(projectile + 0x178u),
-            guest_f32(projectile + 0x17Cu), guest_f32(projectile + 0x180u), guest_u32(projectile + 0x1B4u));
+            guest_f32(projectile + 0x17Cu), guest_f32(projectile + 0x180u), guest_u32(projectile + 0x1B4u),
+            /* 0.350: the step's ray (start +0x2A8, end +0x2B4), to tell where on it the round stopped */
+            guest_f32(projectile + 0x2A8u), guest_f32(projectile + 0x2ACu), guest_f32(projectile + 0x2B0u),
+            guest_f32(projectile + 0x2B4u), guest_f32(projectile + 0x2B8u), guest_f32(projectile + 0x2BCu));
         (void)wo;
     }
     if (stage == 1u && actor >= 0x00010000u &&
