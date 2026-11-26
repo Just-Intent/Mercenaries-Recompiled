@@ -21297,6 +21297,27 @@ void recomp_widen_broadphase(void)
         xbox_preview_log_event("guest-snapshot", "physics broadphase: x and z -4352..4352 m (retail -2176..2448, -2176..2176)");
 }
 
+/* 0.359: the model a body's physics is built from. 0x1319F0 (called from
+ * 0x133AD0, 0x138B20, 0x13B0E0, 0x140FB0, 0x142810) reads the thing's
+ * GeometryFile hash (0x131B97), looks it up in the sorted by-hash table
+ * (count 0x6438A8, keys 0x6438B4, values 0x6438B0; 0x13A20 is the same
+ * lookup), and when it isn't there reads property 0xEA5F1FCB, a hex hash as
+ * text (0x237B9D), and looks that up instead. Gaza's copy of the extraction
+ * Black Hawk lands on an invisible box where retail's lands; every Gaza
+ * vehicle is a new model name. Logged under guest-snapshot: stage 1 the
+ * GeometryFile lookup, stage 2 the fallback's. First 300. */
+void recomp_trace_vehicle_physics(unsigned stage, uint32_t owner, uint32_t hash, uint32_t found)
+{
+    static unsigned said, found_said;
+    /* every miss (up to 400), the first 60 found: a level builds thousands */
+    if (found ? found_said++ >= 60u : said >= 400u) return;
+    said++;
+    xbox_preview_log_event("guest-snapshot", "physics model %u: %s %08X for %08X (vtable %08X) %s %08X (table holds %u)",
+                           said, stage == 1 ? "GeometryFile" : "fallback 0xEA5F1FCB", hash, owner,
+                           owner >= 0x10000u && owner < 0x04000000u ? guest_u32(owner) : 0u,
+                           found ? "found" : "NOT FOUND", found, guest_u32(0x6438A8u));
+}
+
 int recomp_xact_list_next_ok(uint32_t next, uint32_t head, uint32_t prev_entry)
 {
     static unsigned said;
