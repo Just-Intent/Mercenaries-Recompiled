@@ -21340,6 +21340,44 @@ void recomp_trace_vehicle_physics(unsigned stage, uint32_t owner, uint32_t hash,
                            found ? "found" : "NOT FOUND", found, guest_u32(0x6438A8u));
 }
 
+/* 0.363: a script's entry checked before it's unpacked. 0x11F780 finds a
+ * script by name hash in the loaded-script table (count 0x371B80, keys
+ * 0x371B8C, entries 0x371B88: +4 the packed text, +8 its unpacked size, +0xC
+ * its packed size), allocates the size and unpacks it (0x21A860 ->
+ * 0x21A750). Gaza crashed in the unpacker after its first IDF contract
+ * (0.360: a read of FFFFFF01), an entry pointing at nothing. A bad entry
+ * (text outside guest memory, a size of 0 or over 4 MB) is now refused: the
+ * script isn't run (0x11F780 returns false, as for a script not found) and
+ * the entry is logged under guest-snapshot. */
+int recomp_script_entry_ok(uint32_t entry, uint32_t hash)
+{
+    static unsigned said;
+    const uint32_t text = guest_u32(entry + 4u), size = guest_u32(entry + 8u), packed = guest_u32(entry + 0xCu);
+    if (text >= 0x10000u && text < 0x04000000u && size && size <= 0x400000u &&
+        packed <= 0x400000u && text + packed <= 0x04000000u)
+        return 1;
+    if (said++ < 20u)
+        xbox_preview_log_event("guest-snapshot",
+            "script %08X: its entry %08X is bad (text %08X, size %u, packed %u; words %08X %08X %08X %08X); not run",
+            hash, entry, text, size, packed, guest_u32(entry), guest_u32(entry + 0x10u),
+            guest_u32(entry + 0x14u), guest_u32(entry + 0x18u));
+    return 0;
+}
+
+/* 0.363: and the buffer it unpacks into. 0x1F7230 returns 1 for a size of
+ * 0 and the allocator 0 when it can't: the unpacker's first back-reference
+ * then reads 1 - 0x100 = FFFFFF01, Gaza's crash address. A buffer under
+ * 0x10000 isn't unpacked into; the script isn't run, and it's logged. */
+int recomp_script_buffer_ok(uint32_t buffer, uint32_t entry)
+{
+    static unsigned said;
+    if (buffer >= 0x10000u && buffer < 0x04000000u) return 1;
+    if (said++ < 20u)
+        xbox_preview_log_event("guest-snapshot",
+            "script entry %08X: no buffer for its %u bytes (got %08X); not run", entry, guest_u32(entry + 8u), buffer);
+    return 0;
+}
+
 int recomp_xact_list_next_ok(uint32_t next, uint32_t head, uint32_t prev_entry)
 {
     static unsigned said;
