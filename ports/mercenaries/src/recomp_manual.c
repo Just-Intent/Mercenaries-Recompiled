@@ -21256,6 +21256,25 @@ void recomp_trace_bullet_ray(uint32_t projectile, uint32_t ray, uint32_t hit)
         sampled++;
     }
     xbox_preview_log_event("guest-snapshot", "%s%s", line, foreign ? " FOREIGN" : "");
+    if (hit) {
+        /* 0.355: what the cast found. 0x1A5F8 reads the hit point at ray
+         * +0x18 and its normal at +0x24 (round +0x268/+0x274); the words
+         * round them are logged raw (the body found is among them), and each
+         * word that is a body (its +0x24 type 1) with that body's owner.
+         * The 0.354 run's hits on the IDF HQ man's line all ended at his
+         * feet, and none reached the bullet-hit code */
+        char w[600];
+        int n = snprintf(w, sizeof(w), "bullet ray %u found: point (%.2f, %.2f, %.2f) normal (%.2f, %.2f, %.2f), words",
+                         rounds, guest_f32(ray + 0x18u), guest_f32(ray + 0x1Cu), guest_f32(ray + 0x20u),
+                         guest_f32(ray + 0x24u), guest_f32(ray + 0x28u), guest_f32(ray + 0x2Cu));
+        for (uint32_t o = 0x14u; o < 0x58u && n < (int)sizeof(w) - 40; o += 4u) {
+            const uint32_t v = guest_u32(ray + o);
+            n += snprintf(w + n, sizeof(w) - n, " +%X:%08X", o, v);
+            if (v >= 0x10000u && v < 0x04000000u && !(v & 3u) && guest_u32(v + 0x24u) == 1u && guest_u32(v + 0x08u))
+                n += snprintf(w + n, sizeof(w) - n, "(body, owner %08X)", guest_u32(v + 0xA4u));
+        }
+        xbox_preview_log_event("guest-snapshot", "%s", w);
+    }
 }
 
 int recomp_xact_list_next_ok(uint32_t next, uint32_t head, uint32_t prev_entry)
