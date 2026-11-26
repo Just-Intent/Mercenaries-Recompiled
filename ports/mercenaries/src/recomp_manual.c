@@ -21218,33 +21218,44 @@ static uint32_t recomp_actor_template_name(uint32_t actor)
  * body equal to any of them or to any body on their +0xB8 chains) with each
  * body's owner (+0xA4), the ray, and whether it hit. Gaza's unshootable men:
  * bullets pass through them; if one's body is on a skip chain, it shows here.
- * Logged for the first 40 rounds, then only when a chain holds more than one
- * body (up to 400 lines). */
+ * 0.354: the 0.351 log ran out in 14 s of a helicopter's gun (its two
+ * bodies made every chain "longer"): now a line for a chain holding a body
+ * of another owner than its first (up to 400), the first 40 rounds, and then
+ * every 20th (up to 400); and the step's own segment (ray +0x58 to +0x64:
+ * where it was and where it is), not the box round it (+0x70..+0x84). */
 void recomp_trace_bullet_ray(uint32_t projectile, uint32_t ray, uint32_t hit)
 {
-    static unsigned said, rounds;
-    if (!recomp_trace_bullets() || said >= 400u || !ray || ray < 0x10000u || ray >= 0x04000000u) return;
+    static unsigned said, sampled, rounds;
+    if (!recomp_trace_bullets() || !ray || ray < 0x10000u || ray >= 0x04000000u) return;
     rounds++;
     char line[700];
-    int k = snprintf(line, sizeof(line), "bullet ray %u: projectile %08X ray %08X hit %u, (%.2f, %.2f, %.2f) to (%.2f, %.2f, %.2f), skips",
+    int k = snprintf(line, sizeof(line), "bullet ray %u: projectile %08X ray %08X hit %u, from (%.2f, %.2f, %.2f) to (%.2f, %.2f, %.2f), skips",
                      rounds, projectile, ray, hit != 0,
-                     guest_f32(ray + 0x70u), guest_f32(ray + 0x74u), guest_f32(ray + 0x78u),
-                     guest_f32(ray + 0x7Cu), guest_f32(ray + 0x80u), guest_f32(ray + 0x84u));
-    int longer = 0;
+                     guest_f32(ray + 0x58u), guest_f32(ray + 0x5Cu), guest_f32(ray + 0x60u),
+                     guest_f32(ray + 0x64u), guest_f32(ray + 0x68u), guest_f32(ray + 0x6Cu));
+    int foreign = 0;
     for (uint32_t s = 0; s < 4u && k < (int)sizeof(line) - 60; s++) {
-        uint32_t b = guest_u32(ray + 4u + 4u * s);
+        uint32_t b = guest_u32(ray + 4u + 4u * s), first_owner = 0;
         k += snprintf(line + k, sizeof(line) - k, " [");
         for (unsigned n = 0; b && n < 8u && k < (int)sizeof(line) - 40; n++) {
             if (b < 0x10000u || b >= 0x04000000u || (b & 3u)) { k += snprintf(line + k, sizeof(line) - k, " bad %08X", b); break; }
-            k += snprintf(line + k, sizeof(line) - k, "%s%08X(owner %08X)", n ? " " : "", b, guest_u32(b + 0xA4u));
-            if (n) longer = 1;
+            const uint32_t owner = guest_u32(b + 0xA4u);
+            k += snprintf(line + k, sizeof(line) - k, "%s%08X(owner %08X)", n ? " " : "", b, owner);
+            if (!n) first_owner = owner;
+            else if (owner != first_owner) foreign = 1;
             b = guest_u32(b + 0xB8u);
         }
         k += snprintf(line + k, sizeof(line) - k, "]");
     }
-    if (rounds > 40u && !longer) return;
-    said++;
-    xbox_preview_log_event("guest-snapshot", "%s", line);
+    if (foreign) {
+        if (said >= 400u) return;
+        said++;
+    } else {
+        if (rounds > 40u && rounds % 20u) return;
+        if (sampled >= 400u) return;
+        sampled++;
+    }
+    xbox_preview_log_event("guest-snapshot", "%s%s", line, foreign ? " FOREIGN" : "");
 }
 
 int recomp_xact_list_next_ok(uint32_t next, uint32_t head, uint32_t prev_entry)
