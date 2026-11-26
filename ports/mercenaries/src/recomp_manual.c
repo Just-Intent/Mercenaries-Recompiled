@@ -20562,7 +20562,12 @@ void recomp_wheel_centre(uint32_t vehicle, uint32_t pos)
     }
     if (i == n)
         return;
-    /* 0.366: esp+0x5C here is the wheel's place in the WORLD (0x22F9BC has
+    /* 0.371: called at 0x465AB, just before the place goes to the wheel's
+     * render node (0x2035D0), no longer at 0x46534: there it went on into the
+     * wheel's matrix the vehicle keeps at +0xDF0 + 0x40 x wheel (0x11D80),
+     * which the driving also reads; Gaza's bikes crawled from the build
+     * where 0.366 first moved it. Now only the drawn tyre moves.
+     * 0.366: esp+0x5C here is the wheel's place in the WORLD (0x22F9BC has
      * turned it by the vehicle's matrix; 0.361's log showed x 2550 on Gaza's
      * bikes), so 0.296-0.365 set a world x to 0 and nothing showed. The
      * vehicle's matrix is at actor +0xB0 (its right axis; up +0xC0, forward
