@@ -20596,9 +20596,20 @@ void recomp_wheel_centre(uint32_t vehicle, uint32_t pos)
             b = guest_u32(vehicle + 0xE0u + 4u * k); memcpy(&o[k], &b, 4);
         }
         rr = r[0] * r[0] + r[1] * r[1] + r[2] * r[2];
+        d = ((w[0] - o[0]) * r[0] + (w[1] - o[1]) * r[1] + (w[2] - o[2]) * r[2]) / (rr > 1e-6f ? rr : 1.0f);
+        {
+            /* 0.375: with wheel_centre=1, the first 24 wheels' numbers: the
+             * tyres never drew centred (0.371-0.373), so whether the matrix
+             * read at +0xB0 is the vehicle's and what offset came out */
+            static unsigned shown;
+            if (shown++ < 24u)
+                xbox_preview_log_event("guest-snapshot",
+                    "wheel centre on: vehicle %08X wheel at (%.2f, %.2f, %.2f), vehicle at (%.2f, %.2f, %.2f), right axis (%.3f, %.3f, %.3f) |r|^2 %.3f, sideways %.3f m%s",
+                    vehicle, w[0], w[1], w[2], o[0], o[1], o[2], r[0], r[1], r[2], rr, d,
+                    (rr > 0.25f && rr < 4.0f && fabsf(d) < 4.0f) ? ", taken off" : ", left (not a rotation, or too far)");
+        }
         if (!(rr > 0.25f && rr < 4.0f))
             return;
-        d = ((w[0] - o[0]) * r[0] + (w[1] - o[1]) * r[1] + (w[2] - o[2]) * r[2]) / rr;
         if (!(fabsf(d) < 4.0f)) {
             if (logged < 4u) {
                 logged++;
