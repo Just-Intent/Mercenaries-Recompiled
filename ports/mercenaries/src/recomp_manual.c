@@ -21309,8 +21309,14 @@ void recomp_widen_broadphase(void)
 void recomp_trace_vehicle_physics(unsigned stage, uint32_t owner, uint32_t hash, uint32_t found)
 {
     static unsigned said, found_said;
-    /* every miss (up to 400), the first 60 found: a level builds thousands */
-    if (found ? found_said++ >= 60u : said >= 400u) return;
+    static DWORD first;
+    /* every miss (up to 400), the first 60 found (a level builds thousands at
+     * load), and from 30 s after the first build every one (0.360: the
+     * extraction's came after the 60) */
+    const DWORD now = GetTickCount();
+    if (!first) first = now ? now : 1u;
+    if (said >= 400u) return;
+    if (found && found_said++ >= 60u && now - first < 30000u) return;
     said++;
     xbox_preview_log_event("guest-snapshot", "physics model %u: %s %08X for %08X (vtable %08X) %s %08X (table holds %u)",
                            said, stage == 1 ? "GeometryFile" : "fallback 0xEA5F1FCB", hash, owner,
