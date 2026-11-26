@@ -21277,6 +21277,26 @@ void recomp_trace_bullet_ray(uint32_t projectile, uint32_t ray, uint32_t hit)
     }
 }
 
+/* 0.358: the physics world's broadphase box. 0x147172 builds the Havok
+ * world from five floats in .rdata: min (-2176, -1152, -2176) and max (2448,
+ * 1152, 2176) (x, y, z; 0x2F1A94 min x and z, 0x2F1A98 min y, 0x2F1A90 max x,
+ * 0x2F1A8C max y, 0x2F1A88 max z), read nowhere else: retail's maps fit in
+ * +-2048 m. A Foundry map's terrain reaches +-4096 m (Gaza's 1024 cells), and
+ * past the box the broadphase clamps every body onto its faces: Gaza's
+ * people east of x 2448 (the IDF HQ, Beit Hanoun) were shot through on and
+ * off, and its helicopters flew over boxes. The box is now +-4352 m in x and
+ * z (y as retail's); the 16-bit sweep then has 13 cm steps, not 7. */
+void recomp_widen_broadphase(void)
+{
+    static int said;
+    const float lo = -4352.0f, hi = 4352.0f;
+    *(volatile float *)guest_ptr(0x2F1A94u) = lo;   /* min x and z */
+    *(volatile float *)guest_ptr(0x2F1A90u) = hi;   /* max x */
+    *(volatile float *)guest_ptr(0x2F1A88u) = hi;   /* max z */
+    if (!said++)
+        xbox_preview_log_event("guest-snapshot", "physics broadphase: x and z -4352..4352 m (retail -2176..2448, -2176..2176)");
+}
+
 int recomp_xact_list_next_ok(uint32_t next, uint32_t head, uint32_t prev_entry)
 {
     static unsigned said;
