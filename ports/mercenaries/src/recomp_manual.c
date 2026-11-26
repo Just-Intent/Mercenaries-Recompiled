@@ -21213,6 +21213,40 @@ static uint32_t recomp_actor_template_name(uint32_t actor)
  * device. A bad link now ends the walk (the rest of the entries keep their
  * state) and the list is closed at the last good entry, so no other walk
  * follows it either. Logged under guest-snapshot. */
+/* 0.351: with trace_bullets, each round's ray as the step casts it (0x1A5DA
+ * -> 0x12C650): the four bodies it skips (ray +4..+0x10; 0x12B6F0 skips a
+ * body equal to any of them or to any body on their +0xB8 chains) with each
+ * body's owner (+0xA4), the ray, and whether it hit. Gaza's unshootable men:
+ * bullets pass through them; if one's body is on a skip chain, it shows here.
+ * Logged for the first 40 rounds, then only when a chain holds more than one
+ * body (up to 400 lines). */
+void recomp_trace_bullet_ray(uint32_t projectile, uint32_t ray, uint32_t hit)
+{
+    static unsigned said, rounds;
+    if (!recomp_trace_bullets() || said >= 400u || !ray || ray < 0x10000u || ray >= 0x04000000u) return;
+    rounds++;
+    char line[700];
+    int k = snprintf(line, sizeof(line), "bullet ray %u: projectile %08X ray %08X hit %u, (%.2f, %.2f, %.2f) to (%.2f, %.2f, %.2f), skips",
+                     rounds, projectile, ray, hit != 0,
+                     guest_f32(ray + 0x70u), guest_f32(ray + 0x74u), guest_f32(ray + 0x78u),
+                     guest_f32(ray + 0x7Cu), guest_f32(ray + 0x80u), guest_f32(ray + 0x84u));
+    int longer = 0;
+    for (uint32_t s = 0; s < 4u && k < (int)sizeof(line) - 60; s++) {
+        uint32_t b = guest_u32(ray + 4u + 4u * s);
+        k += snprintf(line + k, sizeof(line) - k, " [");
+        for (unsigned n = 0; b && n < 8u && k < (int)sizeof(line) - 40; n++) {
+            if (b < 0x10000u || b >= 0x04000000u || (b & 3u)) { k += snprintf(line + k, sizeof(line) - k, " bad %08X", b); break; }
+            k += snprintf(line + k, sizeof(line) - k, "%s%08X(owner %08X)", n ? " " : "", b, guest_u32(b + 0xA4u));
+            if (n) longer = 1;
+            b = guest_u32(b + 0xB8u);
+        }
+        k += snprintf(line + k, sizeof(line) - k, "]");
+    }
+    if (rounds > 40u && !longer) return;
+    said++;
+    xbox_preview_log_event("guest-snapshot", "%s", line);
+}
+
 int recomp_xact_list_next_ok(uint32_t next, uint32_t head, uint32_t prev_entry)
 {
     static unsigned said;
