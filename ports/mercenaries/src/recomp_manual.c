@@ -11692,9 +11692,9 @@ void recomp_bullet_hit_checkpoint(uint32_t stage, uint32_t projectile,
                                   uint32_t actor, uint32_t value)
 {
     static unsigned int samples;
-    if (!recomp_trace_bullets() || samples++ >= 512u)
+    if (!recomp_trace_bullets() || samples++ >= 4096u)
         return;
-    if (samples <= 200u) {
+    if (samples <= 3000u) {   /* 0.349: 200 ran out a few minutes into a run */
         /* the hit actor's world object and its model hash, so a log shows whose it was */
         const uint32_t wo = actor ? guest_u32(actor + 8u) : 0u;
         xbox_preview_log_event("guest-snapshot",
@@ -11739,7 +11739,7 @@ void recomp_bullet_damage_result_checkpoint(uint32_t projectile,
         return;
     {
         static unsigned said;
-        if (said++ < 200u)
+        if (said++ < 1000u)
             xbox_preview_log_event("guest-snapshot", "bullet damage: projectile %08X actor %08X (vtable %08X) result %g",
                                    projectile, actor, actor ? guest_u32(actor) : 0u, (double)result);
     }
