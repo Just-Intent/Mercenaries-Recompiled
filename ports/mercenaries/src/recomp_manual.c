@@ -20562,6 +20562,17 @@ void recomp_wheel_centre(uint32_t vehicle, uint32_t pos)
     }
     if (i == n)
         return;
+    /* 0.374: off. Gaza's bikes crawled (2.8 m/s) from the first build where
+     * the centring took effect (0.366) through 0.373, at 0x46534 and at
+     * 0x465AB alike, and their tyres never drew centred: the place 0x465AB
+     * hands on (vehicle + 0xB04 + 0x5C x wheel) is the wheel's own object,
+     * which the physics reads again. Nothing is moved now; the log above
+     * stays. A drawing-only place is still to be found. */
+    {
+        static int on = -1;                     /* read once: this runs per wheel per frame */
+        if (on < 0) on = recomp_dev_ini_int("wheel_centre", 0) == 1;
+        if (!on) return;
+    }
     /* 0.371: called at 0x465AB, just before the place goes to the wheel's
      * render node (0x2035D0), no longer at 0x46534: there it went on into the
      * wheel's matrix the vehicle keeps at +0xDF0 + 0x40 x wheel (0x11D80),
