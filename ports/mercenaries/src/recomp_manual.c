@@ -20570,7 +20570,7 @@ void recomp_wheel_centre(uint32_t vehicle, uint32_t pos)
      * stays. A drawing-only place is still to be found. */
     {
         static int on = -1;                     /* read once: this runs per wheel per frame */
-        if (on < 0) on = recomp_dev_ini_int("wheel_centre", 0) == 1;
+        if (on < 0) on = recomp_dev_ini_int("wheel_centre", 1) == 1;   /* 0.379: on by default (the user: "two wheels and drives well"); wheel_centre=0 turns it off */
         if (!on) return;
     }
     /* 0.378: called at 0x46534 again (removed in 0.376), off unless
