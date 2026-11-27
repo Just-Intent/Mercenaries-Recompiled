@@ -20573,7 +20573,12 @@ void recomp_wheel_centre(uint32_t vehicle, uint32_t pos)
         if (on < 0) on = recomp_dev_ini_int("wheel_centre", 0) == 1;
         if (!on) return;
     }
-    /* 0.371: called at 0x465AB, just before the place goes to the wheel's
+    /* 0.378: called at 0x46534 again (removed in 0.376), off unless
+     * developer.ini wheel_centre=1: the bikes' crawl was the jeep base, not
+     * this (2233's three-way ride), so the 0.366 way can be tried on the
+     * Daewoo bike: there the place goes on into the wheel's stored matrix
+     * (+0xDF0) and its node both.
+     * 0.371: called at 0x465AB, just before the place goes to the wheel's
      * render node (0x2035D0), no longer at 0x46534: there it went on into the
      * wheel's matrix the vehicle keeps at +0xDF0 + 0x40 x wheel (0x11D80),
      * which the driving also reads; Gaza's bikes crawled from the build

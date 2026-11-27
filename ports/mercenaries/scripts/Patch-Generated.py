@@ -15195,7 +15195,9 @@ PATCHES += (
     GeneratedPatch('Scribble load at 00121B15',
         'loc_00121B15: ;\n    eax = MEM32(esp + 0x14);\n    edi = MEM32(ebx + 0x3008);\n    esi = eax + 0xC;\n    ecx = 0x1000;\n    XBOX_REP_MOVS(edi, esi, ecx, 4u);\n    esi += ecx * 4; edi += ecx * 4; ecx = 0; /* rep movsd */\n    ecx = MEM32(eax);\n    ecx = ecx + MEM32(ebx + 0x3008);\n    MEM32(ebx + 0x300C) = ecx;\n    edx = MEM32(eax + 4);\n    MEM32(ebx + 0x3010) = edx;\n    eax = MEM32(eax + 8);',
         "loc_00121B15: ;\n    eax = MEM32(esp + 0x14);\n    { void recomp_scribble_load(uint32_t, uint32_t); recomp_scribble_load(ebx, eax); }   /* foundry: packed saves; nothing read past the save's 16 KB */\n    eax = MEM32(eax + 8);"),
-    # 0.376: the wheel hook (0.296-0.375, at 0x46534 then 0x465AB) removed: 0x45C50 as retail
+    GeneratedPatch('Wheels on the centre line at 00046534 (with wheel_centre=1)',
+        'loc_00046534: ;\n    recomp_xmm_loadss(xmm0v, esp + 0x5C); /* movss */\n    MEMF(esp + 0x100) = xmm0; /* movss */',
+        'loc_00046534: ;\n    { void recomp_wheel_centre(uint32_t, uint32_t); recomp_wheel_centre(esi, esp + 0x5C); }   /* foundry 0.378: wheels on the centre line (Foundry_CentreWheels), with developer.ini wheel_centre=1 */\n    recomp_xmm_loadss(xmm0v, esp + 0x5C); /* movss */\n    MEMF(esp + 0x100) = xmm0; /* movss */'),
     GeneratedPatch('Loading picture wait at 0010CD0A',
         'loc_0010CD0A: ;\n    MEM32(0x365D50) = 0;\n    goto loc_0010CCB0;',
         "loc_0010CD0A: ;\n    MEM32(0x365D50) = 0;\n    { int recomp_loadscreen_wait(uint32_t); if (recomp_loadscreen_wait(eax)) goto loc_0010CD1B; }   /* foundry: the loading picture's wait gives up after 15 s */\n    goto loc_0010CCB0;"),
