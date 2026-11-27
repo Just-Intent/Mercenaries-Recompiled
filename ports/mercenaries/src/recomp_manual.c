@@ -21430,6 +21430,43 @@ int recomp_script_buffer_ok(uint32_t buffer, uint32_t entry)
     return 0;
 }
 
+/* 0.377: joints hidden after the game composes them. A vehicle's pose
+ * (its matrix table at actor +0x60, 0x40 bytes a joint) is composed down a
+ * chain by 0x204420 (from 0x2049A0) and 0x203D60 (from 0x204770): child =
+ * local x parent, the skeleton's joints 0x28 bytes with the parent's index
+ * at +0x24. A turret's chain is composed every frame, after the plugins'
+ * update (at the input checkpoint), so Foundry_HideJoint's shrink held on a
+ * bike without a turret and not on Gaza's gunner bike. Foundry Console
+ * writes its hidden joints to 0x87B400 (count, then actor and joint index
+ * pairs, up to 48; free guest memory beside the IgnoreAttacks list); after
+ * each of those two composers every listed joint of a still wheeled vehicle
+ * (vtable 0x2E1968 or 0x2E16D0) is shrunk again to a thousandth. */
+#define RECOMP_HIDDEN_JOINTS 0x87B400u
+void recomp_hidden_joints_apply(void)
+{
+    const uint32_t n = guest_u32(RECOMP_HIDDEN_JOINTS);
+    if (!n || n > 48u) return;
+    for (uint32_t i = 0; i < n; i++) {
+        const uint32_t actor = guest_u32(RECOMP_HIDDEN_JOINTS + 4u + 8u * i);
+        const uint32_t index = guest_u32(RECOMP_HIDDEN_JOINTS + 8u + 8u * i);
+        if (actor < 0x10000u || actor >= 0x04000000u || (actor & 3u) || index > 255u) continue;
+        const uint32_t vt = guest_u32(actor);
+        if (vt != 0x2E1968u && vt != 0x2E16D0u) continue;
+        const uint32_t table = guest_u32(actor + 0x60u);
+        if (table < 0x10000u || table >= 0x04000000u - 0x4000u || (table & 3u)) continue;
+        const uint32_t at = table + 0x40u * index;
+        float f[12];
+        for (unsigned k = 0; k < 12u; k++) { const uint32_t b = guest_u32(at + 4u * k); memcpy(&f[k], &b, 4); }
+        if (!(f[0] * f[0] + f[1] * f[1] + f[2] * f[2] > 0.0001f)) continue;      /* shrunk already */
+        for (unsigned k = 0; k < 12u; k++) {
+            const float v = f[k] * 0.001f;
+            uint32_t b;
+            memcpy(&b, &v, 4);
+            *(volatile uint32_t *)guest_ptr(at + 4u * k) = b;
+        }
+    }
+}
+
 int recomp_xact_list_next_ok(uint32_t next, uint32_t head, uint32_t prev_entry)
 {
     static unsigned said;
