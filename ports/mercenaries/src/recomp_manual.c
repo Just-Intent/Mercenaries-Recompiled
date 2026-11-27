@@ -21082,6 +21082,28 @@ static DWORD WINAPI recomp_d3d_sampler(LPVOID unused)
         if (dev < 0x00010000u || dev >= 0x04000000u - D3D_DEV_BYTES) { have_dev = 0; continue; }
         memcpy(cur, (const void *)guest_ptr(dev), D3D_DEV_BYTES);
         if (have_dev != dev) { memcpy(prev, cur, sizeof(prev)); have_dev = dev; continue; }
+        {
+            /* 0.380: a block rewrite of the device (559 words in one ms before
+             * Gaza's Settlers freeze) named by where the game thread was */
+            static unsigned block_logged;
+            uint32_t changed = 0, first = 0, last = 0;
+            for (uint32_t i = 0; i < D3D_DEV_BYTES / 4u; i++) {
+                if (cur[i] == prev[i]) continue;
+                if (!changed) first = 4u * i;
+                last = 4u * i;
+                changed++;
+            }
+            if (changed >= 64u && block_logged < 12u) {
+                block_logged++;
+                const uint32_t end = g_recomp_recent_game_func_idx;
+                uint32_t r[8];
+                for (unsigned q = 0; q < 8u; q++) r[q] = q < end ? g_recomp_recent_game_funcs[(end - 1u - q) & 255u] : 0u;
+                xbox_preview_log_event("guest-guard",
+                    "d3d device watch: %u words changed within the last ms (+%X..+%X); the game thread was in guest "
+                    "function %08X; last game functions %08X %08X %08X %08X %08X %08X %08X %08X",
+                    changed, first, last, (uint32_t)g_recomp_current_func, r[0], r[1], r[2], r[3], r[4], r[5], r[6], r[7]);
+            }
+        }
         for (uint32_t i = 0; i < D3D_DEV_BYTES / 4u; i++) {
             if (cur[i] == prev[i] || (cur[i] >> 16) != 0xFFFFu || logged >= 32u) continue;
             logged++;
@@ -21099,9 +21121,21 @@ static DWORD WINAPI recomp_d3d_sampler(LPVOID unused)
             if (recomp_d3d_ptr_ok(cur[i]) || !recomp_d3d_ptr_ok(prev[i])) continue;
             recomp_d3d_snapshot(prev, cur, dev);   /* 0.329 */
             *(volatile uint32_t *)guest_ptr(dev + slots[k]) = prev[i];
-            if (logged < 32u) {
-                logged++;
-                xbox_preview_log_event("guest-guard", "d3d device watch: +%X held %08X; put back %08X", slots[k], cur[i], prev[i]);
+            {
+                /* 0.380: its own count (the 32 FFFFxxxx lines used them all up
+                 * before Gaza's freeze at the Settlers' HQ, a 559-word overwrite
+                 * of the device in one ms), and where the game thread was */
+                static unsigned slot_logged;
+                if (slot_logged < 40u) {
+                    slot_logged++;
+                    const uint32_t end = g_recomp_recent_game_func_idx;
+                    uint32_t r[8];
+                    for (unsigned q = 0; q < 8u; q++) r[q] = q < end ? g_recomp_recent_game_funcs[(end - 1u - q) & 255u] : 0u;
+                    xbox_preview_log_event("guest-guard",
+                        "d3d device watch: +%X held %08X; put back %08X; the game thread was in guest function %08X; "
+                        "last game functions %08X %08X %08X %08X %08X %08X %08X %08X",
+                        slots[k], cur[i], prev[i], (uint32_t)g_recomp_current_func, r[0], r[1], r[2], r[3], r[4], r[5], r[6], r[7]);
+                }
             }
             cur[i] = prev[i];
         }
